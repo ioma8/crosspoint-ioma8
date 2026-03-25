@@ -42,6 +42,11 @@ class GfxRenderer {
   uint8_t* bwBufferChunks[BW_BUFFER_NUM_CHUNKS] = {nullptr};
   std::map<int, EpdFontFamily> fontMap;
 
+  // Last-used font cache — avoids a std::map binary search on every glyph call
+  // when consecutive calls share the same fontId (the common case during rendering).
+  mutable int cachedFontId = -1;
+  mutable const EpdFontFamily* cachedFont = nullptr;
+
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
   // as before, concentrated in a single pointer instead of four fields.
@@ -50,6 +55,9 @@ class GfxRenderer {
   void renderChar(const EpdFontFamily& fontFamily, uint32_t cp, int* x, int* y, bool pixelState,
                   EpdFontFamily::Style style) const;
   void freeBwBufferChunks();
+  /// Returns the EpdFontFamily for the given fontId, or nullptr if not found.
+  /// Uses a single-entry last-used cache to skip the std::map lookup on repeated calls.
+  const EpdFontFamily* findFont(int fontId) const;
   template <Color color>
   void drawPixelDither(int x, int y) const;
   template <Color color>

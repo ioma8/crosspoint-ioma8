@@ -98,6 +98,8 @@ void EpubReaderActivity::onExit() {
 
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
+  lastSavedSpineIndex = -1;
+  lastSavedPage = -1;
   section.reset();
   epub.reset();
 }
@@ -677,6 +679,11 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
 }
 
 void EpubReaderActivity::saveProgress(int spineIndex, int currentPage, int pageCount) {
+  if (spineIndex == lastSavedSpineIndex && currentPage == lastSavedPage) {
+    return;  // Nothing changed, skip SD write
+  }
+  lastSavedSpineIndex = spineIndex;
+  lastSavedPage = currentPage;
   FsFile f;
   if (Storage.openFileForWrite("ERS", epub->getCachePath() + "/progress.bin", f)) {
     uint8_t data[6];

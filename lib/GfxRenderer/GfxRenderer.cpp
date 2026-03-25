@@ -30,7 +30,24 @@ void GfxRenderer::begin() {
   }
 }
 
-void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) { fontMap.insert({fontId, font}); }
+void GfxRenderer::insertFont(const int fontId, EpdFontFamily font) {
+  fontMap.insert({fontId, font});
+  // Invalidate the last-used cache so it doesn't hold a stale pointer after
+  // the map potentially rehashes/reallocates on insert.
+  cachedFontId = -1;
+  cachedFont = nullptr;
+}
+
+const EpdFontFamily* GfxRenderer::findFont(const int fontId) const {
+  if (fontId == cachedFontId && cachedFont != nullptr) {
+    return cachedFont;
+  }
+  const auto it = fontMap.find(fontId);
+  if (it == fontMap.end()) return nullptr;
+  cachedFontId = fontId;
+  cachedFont = &it->second;
+  return cachedFont;
+}
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
 // This should always be inlined for better performance
@@ -188,14 +205,14 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
 }
 
 int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
 
   int w = 0, h = 0;
-  fontIt->second.getTextDimensions(text, &w, &h, style);
+  font->getTextDimensions(text, &w, &h, style);
   return w;
 }
 
@@ -223,12 +240,12 @@ void GfxRenderer::drawText(const int fontId, const int x, const int y, const cha
     return;
   }
 
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* fontPtr = findFont(fontId);
+  if (!fontPtr) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return;
   }
-  const auto& font = fontIt->second;
+  const auto& font = *fontPtr;
   constexpr int MIN_COMBINING_GAP_PX = 1;
 
   uint32_t cp;
@@ -837,20 +854,92 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
                                        const EpdFontFamily::Style style) const {
   if (!text || maxWidth <= 0) return "";
 
-  std::string item = text;
   // U+2026 HORIZONTAL ELLIPSIS (UTF-8: 0xE2 0x80 0xA6)
-  const char* ellipsis = "\xe2\x80\xa6";
-  int textWidth = getTextWidth(fontId, item.c_str(), style);
+  static constexpr const char* ellipsis = "\xe2\x80\xa6";
+  static constexpr int ELLIPSIS_BYTES = 3;  // 3 UTF-8 bytes for U+2026
+
+  // Fast path: if the text already fits, return it verbatim (one measurement).
+  const int textWidth = getTextWidth(fontId, text, style);
   if (textWidth <= maxWidth) {
-    // Text fits, return as is
-    return item;
+    return text;
   }
 
-  while (!item.empty() && getTextWidth(fontId, (item + ellipsis).c_str(), style) >= maxWidth) {
-    utf8RemoveLastChar(item);
+  const EpdFontFamily* fontPtr = findFont(fontId);
+  if (!fontPtr) {
+    LOG_ERR("GFX", "Font %d not found", fontId);
+    return "";
+  }
+  const EpdFontFamily& font = *fontPtr;
+
+  // Measure the ellipsis width once up front.
+  int ellipsisW = 0, ellipsisH = 0;
+  font.getTextDimensions(ellipsis, &ellipsisW, &ellipsisH, style);
+
+  if (ellipsisW > maxWidth) {
+    // Even the ellipsis alone doesn't fit — return empty string.
+    return "";
   }
 
-  return item.empty() ? ellipsis : item + ellipsis;
+  const int budget = maxWidth - ellipsisW;
+
+  // Single forward pass: accumulate glyph advances (same fixed-point logic as
+  // getTextAdvanceX) and track the last byte offset where accumulated <= budget.
+  // Combining marks do not advance the cursor (same as getTextAdvanceX).
+  int32_t widthFP = 0;  // 12.4 fixed-point accumulator
+  uint32_t cp = 0;
+  uint32_t prevCp = 0;
+  const char* cursor = text;
+  const char* lastFitEnd = text;  // byte position of the last fitting cut point
+
+  while (*(cursor)) {
+    cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor));
+    if (cp == 0) break;
+
+    if (utf8IsCombiningMark(cp)) {
+      // Combining marks are drawn over the previous base glyph and don't advance.
+      continue;
+    }
+
+    cp = font.applyLigatures(cp, cursor, style);
+
+    int32_t kernFP = 0;
+    if (prevCp != 0) {
+      kernFP = font.getKerning(prevCp, cp, style);  // 4.4 fixed-point
+    }
+
+    const EpdGlyph* glyph = font.getGlyph(cp, style);
+    const int32_t advanceFP = glyph ? static_cast<int32_t>(glyph->advanceX) : 0;
+
+    // Check BEFORE adding this glyph: if the addition would exceed budget, stop.
+    if (fp4::toPixel(widthFP + kernFP + advanceFP) > budget) {
+      break;
+    }
+
+    widthFP += kernFP + advanceFP;
+    prevCp = cp;
+    lastFitEnd = cursor;  // cursor has already advanced past this codepoint
+  }
+
+  // Build result: prefix up to lastFitEnd, then the ellipsis.
+  const int prefixLen = static_cast<int>(lastFitEnd - text);
+
+  // Stack buffer: 512 bytes covers practically all e-reader text lines.
+  // If the prefix is somehow longer, fall back to heap via std::string.
+  constexpr int STACK_BUF = 512;
+  if (prefixLen + ELLIPSIS_BYTES < STACK_BUF) {
+    char buf[STACK_BUF];
+    memcpy(buf, text, static_cast<size_t>(prefixLen));
+    memcpy(buf + prefixLen, ellipsis, ELLIPSIS_BYTES);
+    buf[prefixLen + ELLIPSIS_BYTES] = '\0';
+    return buf;  // std::string constructed from null-terminated stack buffer
+  }
+
+  // Fallback for abnormally long strings (should not occur in practice on this device).
+  std::string result;
+  result.reserve(static_cast<size_t>(prefixLen) + ELLIPSIS_BYTES);
+  result.append(text, static_cast<size_t>(prefixLen));
+  result.append(ellipsis, ELLIPSIS_BYTES);
+  return result;
 }
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,
@@ -947,21 +1036,21 @@ int GfxRenderer::getScreenHeight() const {
 }
 
 int GfxRenderer::getSpaceWidth(const int fontId, const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
 
-  const EpdGlyph* spaceGlyph = fontIt->second.getGlyph(' ', style);
+  const EpdGlyph* spaceGlyph = font->getGlyph(' ', style);
   return spaceGlyph ? fp4::toPixel(spaceGlyph->advanceX) : 0;  // snap 12.4 fixed-point to nearest pixel
 }
 
 int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                                  const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) return 0;
-  const auto& font = fontIt->second;
+  const EpdFontFamily* fontPtr = findFont(fontId);
+  if (!fontPtr) return 0;
+  const auto& font = *fontPtr;
   const EpdGlyph* spaceGlyph = font.getGlyph(' ', style);
   const int32_t spaceAdvanceFP = spaceGlyph ? static_cast<int32_t>(spaceGlyph->advanceX) : 0;
   // Combine space advance + flanking kern into one fixed-point sum before snapping.
@@ -973,15 +1062,15 @@ int GfxRenderer::getSpaceAdvance(const int fontId, const uint32_t leftCp, const 
 
 int GfxRenderer::getKerning(const int fontId, const uint32_t leftCp, const uint32_t rightCp,
                             const EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) return 0;
-  const int kernFP = fontIt->second.getKerning(leftCp, rightCp, style);  // 4.4 fixed-point
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) return 0;
+  const int kernFP = font->getKerning(leftCp, rightCp, style);  // 4.4 fixed-point
   return fp4::toPixel(kernFP);                                           // snap 4.4 fixed-point to nearest pixel
 }
 
 int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFamily::Style style) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* fontPtr = findFont(fontId);
+  if (!fontPtr) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
@@ -989,7 +1078,7 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
   uint32_t cp;
   uint32_t prevCp = 0;
   int32_t widthFP = 0;  // 12.4 fixed-point accumulator
-  const auto& font = fontIt->second;
+  const auto& font = *fontPtr;
   while ((cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text)))) {
     if (utf8IsCombiningMark(cp)) {
       continue;
@@ -1006,32 +1095,32 @@ int GfxRenderer::getTextAdvanceX(const int fontId, const char* text, EpdFontFami
 }
 
 int GfxRenderer::getFontAscenderSize(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
 
-  return fontIt->second.getData(EpdFontFamily::REGULAR)->ascender;
+  return font->getData(EpdFontFamily::REGULAR)->ascender;
 }
 
 int GfxRenderer::getLineHeight(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
 
-  return fontIt->second.getData(EpdFontFamily::REGULAR)->advanceY;
+  return font->getData(EpdFontFamily::REGULAR)->advanceY;
 }
 
 int GfxRenderer::getTextHeight(const int fontId) const {
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* font = findFont(fontId);
+  if (!font) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return 0;
   }
-  return fontIt->second.getData(EpdFontFamily::REGULAR)->ascender;
+  return font->getData(EpdFontFamily::REGULAR)->ascender;
 }
 
 void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y, const char* text, const bool black,
@@ -1041,13 +1130,13 @@ void GfxRenderer::drawTextRotated90CW(const int fontId, const int x, const int y
     return;
   }
 
-  const auto fontIt = fontMap.find(fontId);
-  if (fontIt == fontMap.end()) {
+  const EpdFontFamily* fontPtr = findFont(fontId);
+  if (!fontPtr) {
     LOG_ERR("GFX", "Font %d not found", fontId);
     return;
   }
 
-  const auto& font = fontIt->second;
+  const auto& font = *fontPtr;
 
   int32_t yPosFP = fp4::fromPixel(y);  // 12.4 fixed-point accumulator
   int lastBaseY = y;

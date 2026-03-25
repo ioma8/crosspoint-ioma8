@@ -4,6 +4,7 @@
 #include <Logging.h>
 #include <Utf8.h>
 
+#include <algorithm>
 #include <cstdlib>
 
 FontDecompressor::~FontDecompressor() { deinit(); }
@@ -252,9 +253,13 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
   }
   PageSlot& slot = pageSlots[pageSlotCount];
 
-  // Step 1: Collect unique glyph indices needed for this page
+  // Step 1: Collect glyph indices needed for this page, then deduplicate via sort+unique.
+  // Collecting with duplicates first avoids the O(n²) linear scan per codepoint; instead we
+  // do one O(n log n) sort at the end.  The array is capped at MAX_PAGE_GLYPHS entries —
+  // once full we simply stop collecting (same behaviour as before: excess glyphs fall back to
+  // the hot-group path).
   uint32_t neededGlyphs[MAX_PAGE_GLYPHS];
-  uint16_t glyphCount = 0;
+  uint16_t rawCount = 0;
   bool glyphCapWarned = false;
 
   const unsigned char* p = reinterpret_cast<const unsigned char*>(utf8Text);
@@ -265,49 +270,58 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
     int32_t glyphIdx = findGlyphIndex(fontData, cp);
     if (glyphIdx < 0) continue;
 
-    // Deduplicate
-    bool found = false;
-    for (uint16_t i = 0; i < glyphCount; i++) {
-      if (neededGlyphs[i] == static_cast<uint32_t>(glyphIdx)) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      if (glyphCount < MAX_PAGE_GLYPHS) {
-        neededGlyphs[glyphCount++] = static_cast<uint32_t>(glyphIdx);
-      } else if (!glyphCapWarned) {
-        LOG_DBG("FDC", "Glyph cap (%u) reached during prewarm; excess glyphs will use hot-group fallback",
-                MAX_PAGE_GLYPHS);
-        glyphCapWarned = true;
-      }
+    if (rawCount < MAX_PAGE_GLYPHS) {
+      neededGlyphs[rawCount++] = static_cast<uint32_t>(glyphIdx);
+    } else if (!glyphCapWarned) {
+      LOG_DBG("FDC", "Glyph cap (%u) reached during prewarm; excess glyphs will use hot-group fallback",
+              MAX_PAGE_GLYPHS);
+      glyphCapWarned = true;
     }
   }
 
+  // Deduplicate: sort then collapse duplicates in-place (O(n log n) vs O(n²) linear scan)
+  std::sort(neededGlyphs, neededGlyphs + rawCount);
+  uint16_t glyphCount = static_cast<uint16_t>(std::unique(neededGlyphs, neededGlyphs + rawCount) - neededGlyphs);
+
   if (glyphCount == 0) return 0;
 
-  // Step 2: Compute total buffer size and collect unique groups
+  // Step 2: Compute total buffer size and collect unique groups.
+  // Use a 128-byte stack-allocated visited array for O(1) group deduplication instead of
+  // the O(n²) linear scan.  groupCount is capped at 128 (uint8_t), so visitedGroup fits
+  // exactly in 128 bytes — well within the ESP32-C3 stack safety budget.
   uint32_t totalBytes = 0;
   uint16_t neededGroups[128];
   uint8_t groupCount = 0;
   bool groupCapWarned = false;
+  bool visitedGroup[128] = {};  // zero-initialised; 128 bytes on stack
 
   for (uint16_t i = 0; i < glyphCount; i++) {
     totalBytes += fontData->glyph[neededGlyphs[i]].dataLength;
     uint16_t gi = getGroupIndex(fontData, neededGlyphs[i]);
-    bool found = false;
-    for (uint8_t j = 0; j < groupCount; j++) {
-      if (neededGroups[j] == gi) {
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
+    if (gi < 128 && !visitedGroup[gi]) {
+      visitedGroup[gi] = true;
       if (groupCount < 128) {
         neededGroups[groupCount++] = gi;
       } else if (!groupCapWarned) {
         LOG_DBG("FDC", "Group cap (128) reached during prewarm; some groups will use hot-group fallback");
         groupCapWarned = true;
+      }
+    } else if (gi >= 128) {
+      // Group index exceeds visited array range; fall back to linear scan for this entry
+      bool found = false;
+      for (uint8_t j = 0; j < groupCount; j++) {
+        if (neededGroups[j] == gi) {
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        if (groupCount < 128) {
+          neededGroups[groupCount++] = gi;
+        } else if (!groupCapWarned) {
+          LOG_DBG("FDC", "Group cap (128) reached during prewarm; some groups will use hot-group fallback");
+          groupCapWarned = true;
+        }
       }
     }
   }
