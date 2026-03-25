@@ -2,10 +2,13 @@
 
 #include <FsHelpers.h>
 #include <HalStorage.h>
+#include <Logging.h>
 
 #include "CrossPointSettings.h"
 #include "Epub.h"
 #include "EpubReaderActivity.h"
+#include "Pdf.h"
+#include "PdfReaderActivity.h"
 #include "Txt.h"
 #include "TxtReaderActivity.h"
 #include "Xtc.h"
@@ -29,6 +32,20 @@ bool ReaderActivity::isTxtFile(const std::string& path) {
 }
 
 bool ReaderActivity::isBmpFile(const std::string& path) { return FsHelpers::hasBmpExtension(path); }
+
+bool ReaderActivity::isPdfFile(const std::string& path) { return FsHelpers::hasPdfExtension(path); }
+
+std::unique_ptr<Pdf> ReaderActivity::loadPdf(const std::string& path) {
+  if (!Storage.exists(path.c_str())) {
+    LOG_ERR("READER", "File does not exist: %s", path.c_str());
+    return nullptr;
+  }
+  auto pdf = Pdf::open(path);
+  if (!pdf) {
+    LOG_ERR("READER", "Failed to load PDF");
+  }
+  return pdf;
+}
 
 std::unique_ptr<Epub> ReaderActivity::loadEpub(const std::string& path) {
   if (!Storage.exists(path.c_str())) {
@@ -103,6 +120,11 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
   activityManager.replaceActivity(std::make_unique<TxtReaderActivity>(renderer, mappedInput, std::move(txt)));
 }
 
+void ReaderActivity::onGoToPdfReader(std::unique_ptr<Pdf> pdf) {
+  currentBookPath = pdf->filePath();
+  activityManager.replaceActivity(std::make_unique<PdfReaderActivity>(renderer, mappedInput, std::move(pdf)));
+}
+
 void ReaderActivity::onEnter() {
   Activity::onEnter();
 
@@ -128,6 +150,13 @@ void ReaderActivity::onEnter() {
       return;
     }
     onGoToTxtReader(std::move(txt));
+  } else if (isPdfFile(initialBookPath)) {
+    auto pdf = loadPdf(initialBookPath);
+    if (!pdf) {
+      onGoBack();
+      return;
+    }
+    onGoToPdfReader(std::move(pdf));
   } else {
     auto epub = loadEpub(initialBookPath);
     if (!epub) {

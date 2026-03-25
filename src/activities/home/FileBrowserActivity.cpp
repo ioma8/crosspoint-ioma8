@@ -95,7 +95,7 @@ void FileBrowserActivity::loadFiles() {
       std::string_view filename{name};
       if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename) ||
           FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename) ||
-          FsHelpers::hasBmpExtension(filename)) {
+          FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPdfExtension(filename)) {
         files.emplace_back(filename);
       }
     }

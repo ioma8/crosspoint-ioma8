@@ -17,7 +17,7 @@ potential.
 
 CrossPoint Reader aims to:
 * Provide a **fully open-source alternative** to the official firmware.
-* Offer a **document reader** capable of handling EPUB content on constrained hardware.
+* Offer a **document reader** capable of handling **EPUB** and **PDF** on constrained hardware.
 * Support **customisable font, layout, and display** options.
 * Run purely on the **Xteink X4 hardware**.
 
@@ -26,6 +26,7 @@ This project is **not affiliated with Xteink**; it's built as a community projec
 ## Features & Usage
 
 - [x] EPUB parsing and rendering (EPUB 2 and EPUB 3)
+- [x] PDF viewing (xref, object streams, page text and images within parser limits; see [PDF.md](./PDF.md))
 - [x] Image support within EPUB
 - [x] Saved reading position
 - [x] File explorer with file picker
@@ -151,6 +152,8 @@ Due the way it's currently implemented, the cache is not automatically cleared w
 file will use a new cache directory, resetting the reading progress.
 
 For more details on the internal file structures, see the [file formats document](./docs/file-formats.md).
+
+PDF ingestion, xref/object-stream handling, and content-stream parsing are described in [PDF.md](./PDF.md). To compile and run the **host-side PDF parser checks** (no device required), use `bash test/pdf/run_pdf_parser_tests.sh` from the repo root.
 
 ## Contributing
 

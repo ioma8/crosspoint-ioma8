@@ -1,6 +1,6 @@
 # Project Information: CrossPoint Reader
 
-CrossPoint Reader is an open-source, minimalist firmware specifically designed for the **Xteink X4** e-reader, which is powered by an **ESP32-C3** microcontroller. The project prioritizes efficiency, focus, and a small RAM footprint (~380KB available) while providing a high-quality EPUB reading experience.
+CrossPoint Reader is an open-source, minimalist firmware specifically designed for the **Xteink X4** e-reader, which is powered by an **ESP32-C3** microcontroller. The project prioritizes efficiency, focus, and a small RAM footprint (~380KB available) while providing a high-quality **EPUB** and **PDF** reading experience (PDF support is documented in [PDF.md](./PDF.md)).
 
 ## Build Instructions
 
@@ -37,7 +37,7 @@ pio run -e default --target upload
 The project follows a modular architecture designed to separate hardware concerns from application logic.
 
 ### 1. Activity Framework (`src/activities/`)
-The UI is built using an **Activity Pattern** (similar to Android's activity stack). An `ActivityManager` manages a stack of screens, handling navigation, transitions, and lifecycle events (e.g., `onCreate`, `onResume`, `onPause`).
+The UI is built using an **Activity Pattern** (similar to Android's activity stack). An `ActivityManager` manages a stack of screens, handling navigation, transitions, and lifecycle events (e.g., `onCreate`, `onResume`, `onPause`). Reader flows include dedicated activities for **EPUB** and **PDF** (e.g. `PdfReaderActivity`, chapter/outline selection where applicable).
 
 ### 2. Hardware Abstraction Layer (HAL) (`lib/hal/`)
 The HAL decouples the firmware from the specific ESP32-C3 hardware, abstracting Display, Storage, Power, and System utilities.
@@ -63,12 +63,15 @@ To maintain a low RAM footprint, CrossPoint uses an aggressive caching strategy:
 2. **SD Caching**: Metadata and chapter pointers are cached in binary format under `.crosspoint/` on the SD card.
 3. **Lazy Loading**: Only the currently needed chapter is loaded into RAM. Page layout is calculated on-the-fly or cached for fast page turns.
 
+For **PDF** files, `lib/Pdf/` parses the document structure (classic and streamed xrefs, object streams), decodes page content streams, and caches laid-out pages under `.crosspoint/` similarly to EPUB sections. See [PDF.md](./PDF.md) for architecture and limitations (e.g. text extraction vs CID fonts).
+
 ---
 
 ## Libraries & Dependencies
 
 ### Internal Libraries (`lib/`)
 - `Epub`: Core EPUB 2/3 parser.
+- `Pdf`: PDF xref, object streams, page tree, outline, and content-stream parsing; integrates with `GfxRenderer` for the PDF reader UI.
 - `EpdFont`: Compressed font format and rendering logic.
 - `GfxRenderer`: Text and image rendering pipeline.
 - `I18n`: Internationalization and translation support.
