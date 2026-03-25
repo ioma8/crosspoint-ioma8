@@ -85,6 +85,8 @@ const Expectation kExpect[] = {
     // Cover + body often use CMap/CID fonts; pipeline check only until encoding support improves.
     {"EE-366.pdf", 1, 0, 0, false, 0},
     {"esp32-c6_datasheet_en.pdf", 20, 0, 10, true, 0},
+    // Clinical handbook: xref + page tree + outlines + content streams parse; no text yet (CID/CMap).
+    {"Problem-Solving Treatment_ Learning and Pl - IHS.pdf", 33, 33, 0, false, 0},
 };
 
 const Expectation* findExpect(const char* base) {
@@ -175,7 +177,8 @@ int main(int argc, char** argv) {
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) paths.push_back(argv[i]);
   } else {
-    paths = {"test/pdf/sample.pdf", "test/pdf/EE-366.pdf", "test/pdf/esp32-c6_datasheet_en.pdf"};
+    paths = {"test/pdf/sample.pdf", "test/pdf/EE-366.pdf", "test/pdf/esp32-c6_datasheet_en.pdf",
+             "test/pdf/Problem-Solving Treatment_ Learning and Pl - IHS.pdf"};
   }
 
   for (const char* path : paths) {
