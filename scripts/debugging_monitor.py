@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = [
+#   "pyserial",
+#   "colorama",
+#   "matplotlib",
+#   "Pillow",
+# ]
+# ///
 """
 ESP32 Serial Monitor with Memory Graph
 
@@ -16,7 +24,7 @@ Features:
 - Thread-safe operation with coordinated shutdown events
 
 Usage:
-    python debugging_monitor.py [port] [options]
+    uv run debugging_monitor.py [port] [options]
 
 The script will open a matplotlib window showing memory usage over time and provide
 an interactive command prompt for sending commands to the device. Press Ctrl-C or
@@ -35,42 +43,11 @@ import threading
 from collections import deque
 from datetime import datetime
 
-# Try to import potentially missing packages
-PACKAGE_MAPPING: dict[str, str] = {
-    "serial": "pyserial",
-    "colorama": "colorama",
-    "matplotlib": "matplotlib",
-    "PIL": "Pillow",
-}
-
-try:
-    import matplotlib.pyplot as plt
-    import serial
-    from colorama import Fore, Style, init
-    from matplotlib import animation
-
-    try:
-        from PIL import Image
-    except ImportError:
-        Image = None
-except ImportError as e:
-    ERROR_MSG = str(e).lower()
-    missing_packages = [pkg for mod, pkg in PACKAGE_MAPPING.items() if mod in ERROR_MSG]
-
-    if not missing_packages:
-        # Fallback if mapping doesn't cover
-        missing_packages = ["pyserial", "colorama", "matplotlib"]
-
-    print("\n" + "!" * 50)
-    print(f" Error: Required package(s) not installed: {', '.join(missing_packages)}")
-    print("!" * 50)
-
-    print("\nTo fix this, please run the following command in your terminal:\n")
-    INSTALL_CMD = "pip install " if sys.platform.startswith("win") else "pip3 install "
-    print(f"    {INSTALL_CMD}{' '.join(missing_packages)}")
-
-    print("\nExiting...")
-    sys.exit(1)
+import matplotlib.pyplot as plt
+import serial
+from colorama import Fore, Style, init
+from matplotlib import animation
+from PIL import Image
 
 # --- Global Variables for Data Sharing ---
 # Store last 50 data points
@@ -231,20 +208,13 @@ def serial_worker(ser, kwargs: dict[str, str]) -> None:
                     continue
                 screenshot_data += data
                 if len(screenshot_data) == screenshot_size:
-                    if Image:
-                        img = Image.frombytes("1", (800, 480), screenshot_data)
-                        # We need to rotate the image because the raw data is in landscape mode
-                        img = img.transpose(Image.ROTATE_270)
-                        img.save("screenshot.bmp")
-                        print(
-                            f"{Fore.GREEN}Screenshot saved to screenshot.bmp{Style.RESET_ALL}"
-                        )
-                    else:
-                        with open("screenshot.raw", "wb") as f:
-                            f.write(screenshot_data)
-                        print(
-                            f"{Fore.GREEN}Screenshot saved to screenshot.raw (PIL not available){Style.RESET_ALL}"
-                        )
+                    img = Image.frombytes("1", (800, 480), screenshot_data)
+                    # We need to rotate the image because the raw data is in landscape mode
+                    img = img.transpose(Image.ROTATE_270)
+                    img.save("screenshot.bmp")
+                    print(
+                        f"{Fore.GREEN}Screenshot saved to screenshot.bmp{Style.RESET_ALL}"
+                    )
                     expecting_screenshot = False
                     screenshot_data = b""
             else:

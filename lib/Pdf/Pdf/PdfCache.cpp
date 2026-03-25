@@ -80,6 +80,9 @@ bool PdfCache::loadPage(uint32_t pageNum, PdfPage& outPage) {
   char name[32];
   snprintf(name, sizeof(name), "%u", static_cast<unsigned>(pageNum));
   const std::string path = cacheDir + "/pages/" + name + ".bin";
+  if (!Storage.exists(path.c_str())) {
+    return false;
+  }
   FsFile f;
   if (!Storage.openFileForRead("PDF", path, f)) {
     return false;

@@ -83,10 +83,10 @@ struct Expectation {
 const Expectation kExpect[] = {
     {"sample.pdf", 1, 0, 20, true, 0},
     // Cover + body often use CMap/CID fonts; pipeline check only until encoding support improves.
-    {"EE-366.pdf", 1, 0, 0, false, 0},
+    {"EE-366.pdf", 1, 0, 500, true, 0},
     {"esp32-c6_datasheet_en.pdf", 20, 0, 10, true, 0},
     // Clinical handbook: xref + page tree + outlines + content streams parse; no text yet (CID/CMap).
-    {"Problem-Solving Treatment_ Learning and Pl - IHS.pdf", 33, 33, 0, false, 0},
+    {"Problem-Solving Treatment_ Learning and Pl - IHS.pdf", 33, 33, 200, true, 0},
 };
 
 const Expectation* findExpect(const char* base) {
@@ -100,6 +100,62 @@ size_t totalTextChars(const PdfPage& p) {
   size_t n = 0;
   for (const auto& b : p.textBlocks) n += b.text.size();
   return n;
+}
+
+void collapseAsciiWhitespace(std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  bool pendingSpace = false;
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char b0 = static_cast<unsigned char>(s[i]);
+    if (b0 == 0xC2 && i + 1 < s.size() && static_cast<unsigned char>(s[i + 1]) == 0xA0) {
+      pendingSpace = true;
+      i += 2;
+      continue;
+    }
+    if (b0 == ' ' || b0 == '\t' || b0 == '\r' || b0 == '\n') {
+      pendingSpace = true;
+      i += 1;
+      continue;
+    }
+    if (pendingSpace && !out.empty()) {
+      out.push_back(' ');
+    }
+    pendingSpace = false;
+    size_t n = 1;
+    if (b0 >= 0x80) {
+      if ((b0 & 0xE0) == 0xC0 && i + 1 < s.size()) {
+        n = 2;
+      } else if ((b0 & 0xF0) == 0xE0 && i + 2 < s.size()) {
+        n = 3;
+      } else if ((b0 & 0xF8) == 0xF0 && i + 3 < s.size()) {
+        n = 4;
+      }
+    }
+    for (size_t j = 0; j < n && i + j < s.size(); ++j) {
+      out.push_back(s[i + j]);
+    }
+    i += n;
+  }
+  s = std::move(out);
+}
+
+void printFirstTextBlockPreview(const char* label, const PdfPage& page) {
+  for (const auto& b : page.textBlocks) {
+    std::string s = b.text;
+    collapseAsciiWhitespace(s);
+    if (s.empty()) {
+      continue;
+    }
+    constexpr size_t kMax = 240;
+    if (s.size() > kMax) {
+      s = s.substr(0, kMax);
+      s += "...";
+    }
+    std::printf("     %s: %s\n", label, s.c_str());
+    return;
+  }
+  std::printf("     %s: (no non-empty blocks)\n", label);
 }
 
 bool runOnePdf(const char* path) {
@@ -167,6 +223,7 @@ bool runOnePdf(const char* path) {
 
   std::printf("OK  %s  pages=%u  outline=%zu  page0_blocks=%zu  page0_chars~%zu\n", base,
               static_cast<unsigned>(pageCount), outline.size(), page0.textBlocks.size(), totalTextChars(page0));
+  printFirstTextBlockPreview("page0 first block", page0);
   return true;
 }
 
