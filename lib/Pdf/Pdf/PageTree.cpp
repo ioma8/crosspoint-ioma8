@@ -6,6 +6,8 @@
 
 namespace {
 
+constexpr size_t kTraversalCap = 64;
+
 void trimInPlaceFs(PdfFixedString<PDF_DICT_VALUE_MAX>& s) {
   while (s.size() > 0 && (s[0] == ' ' || s[0] == '\t' || s[0] == '\r' || s[0] == '\n')) {
     s.erase_prefix(1);
@@ -26,7 +28,7 @@ bool typeIs(std::string_view body, const char* name) {
   return t.view() == name;
 }
 
-void parseKidsRefs(std::string_view arr, PdfFixedVector<uint32_t, PDF_MAX_PAGES>& out) {
+void parseKidsRefs(std::string_view arr, PdfFixedVector<uint32_t, kTraversalCap>& out) {
   out.clear();
   const char* p = arr.data();
   const char* end = arr.data() + arr.size();
@@ -61,7 +63,7 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
   pageOffsets.clear();
   pageObjectIds.clear();
 
-  PdfFixedVector<uint32_t, PDF_MAX_PAGES> stack;
+  PdfFixedVector<uint32_t, kTraversalCap> stack;
   if (!stack.push_back(pagesObjId)) {
     return false;
   }
@@ -78,7 +80,7 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
       if (!PdfObject::getDictValue("/Kids", body.view(), kidsStr)) {
         continue;
       }
-      PdfFixedVector<uint32_t, PDF_MAX_PAGES> kids;
+      PdfFixedVector<uint32_t, kTraversalCap> kids;
       parseKidsRefs(kidsStr.view(), kids);
       for (int ki = static_cast<int>(kids.size()) - 1; ki >= 0; --ki) {
         if (!stack.push_back(kids[static_cast<size_t>(ki)])) {
