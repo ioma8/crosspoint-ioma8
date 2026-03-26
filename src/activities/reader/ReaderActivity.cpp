@@ -40,9 +40,10 @@ std::unique_ptr<Pdf> ReaderActivity::loadPdf(const std::string& path) {
     LOG_ERR("READER", "File does not exist: %s", path.c_str());
     return nullptr;
   }
-  auto pdf = Pdf::open(path);
-  if (!pdf) {
+  auto pdf = std::make_unique<Pdf>();
+  if (!pdf->open(path.c_str())) {
     LOG_ERR("READER", "Failed to load PDF");
+    return nullptr;
   }
   return pdf;
 }
@@ -121,7 +122,7 @@ void ReaderActivity::onGoToTxtReader(std::unique_ptr<Txt> txt) {
 }
 
 void ReaderActivity::onGoToPdfReader(std::unique_ptr<Pdf> pdf) {
-  currentBookPath = pdf->filePath();
+  currentBookPath = pdf->filePath().c_str();
   activityManager.replaceActivity(std::make_unique<PdfReaderActivity>(renderer, mappedInput, std::move(pdf)));
 }
 

@@ -2,13 +2,11 @@
 
 #include <Pdf.h>
 
-#include <vector>
-
 #include "../Activity.h"
 #include "util/ButtonNavigator.h"
 
 class PdfReaderChapterSelectionActivity final : public Activity {
-  std::vector<PdfOutlineEntry> outline;
+  const PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES> outline;
   uint32_t currentPage = 0;
 
   int selectedIndex = 0;
@@ -19,7 +17,8 @@ class PdfReaderChapterSelectionActivity final : public Activity {
 
  public:
   PdfReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                    const std::vector<PdfOutlineEntry>& outlineIn, uint32_t currentPageZeroBased);
+                                    const PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& outlineIn,
+                                    uint32_t currentPageZeroBased);
 
   void onEnter() override;
   void onExit() override;

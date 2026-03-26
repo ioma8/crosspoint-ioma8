@@ -11,7 +11,7 @@ struct FileInflateReadCtx {
   FsFile* file = nullptr;
   uint32_t cur = 0;
   uint32_t left = 0;
-  uint8_t buf[2048];
+  uint8_t buf[256];
   uint32_t blen = 0;
   uint32_t bpos = 0;
 };
@@ -155,4 +155,115 @@ size_t StreamDecoder::flateDecodeBytes(const uint8_t* compressed, size_t compres
     }
   }
   return total;
+}
+
+bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint32_t compressedLen,
+                                      ChunkConsumer consumer, void* ctx) {
+  if (!consumer || compressedLen == 0) return false;
+
+  FileInflateReadCtx readCtx{};
+  readCtx.file = &file;
+
+  if (compressedLen >= 2) {
+    if (!file.seek(streamOffset)) return false;
+    uint8_t h[6]{};
+    if (file.read(h, 2) != 2) return false;
+    size_t have = 2;
+    if (compressedLen >= 6 && (h[1] & 0x20) != 0) {
+      if (file.read(h + 2, 4) != 4) return false;
+      have = 6;
+    }
+    const size_t zlibSkip = zlibWrapperSkipLen(h, have);
+    if (zlibSkip >= 2) {
+      readCtx.cur = streamOffset + static_cast<uint32_t>(zlibSkip);
+      readCtx.left = compressedLen - static_cast<uint32_t>(zlibSkip);
+    } else if (have == 6) {
+      std::memcpy(readCtx.buf, h, 6);
+      readCtx.blen = 6;
+      readCtx.bpos = 0;
+      readCtx.cur = streamOffset + 6;
+      readCtx.left = compressedLen - 6;
+    } else {
+      readCtx.buf[0] = h[0];
+      readCtx.buf[1] = h[1];
+      readCtx.blen = 2;
+      readCtx.bpos = 0;
+      readCtx.cur = streamOffset + 2;
+      readCtx.left = compressedLen - 2;
+    }
+  } else if (compressedLen == 1) {
+    if (!file.seek(streamOffset)) return false;
+    if (file.read(readCtx.buf, 1) != 1) return false;
+    readCtx.blen = 1;
+    readCtx.bpos = 0;
+    readCtx.cur = streamOffset + 1;
+    readCtx.left = 0;
+  }
+
+  g_fileInflateCtx = &readCtx;
+
+  InflateReader ir;
+  if (!ir.init(true)) {
+    g_fileInflateCtx = nullptr;
+    return false;
+  }
+  uzlib_uncomp* d = ir.raw();
+  d->source_read_cb = fileInflateReadCb;
+  d->source = nullptr;
+  d->source_limit = nullptr;
+
+  uint8_t out[256];
+  while (true) {
+    size_t produced = 0;
+    const InflateStatus st = ir.readAtMost(out, sizeof(out), &produced);
+    if (produced > 0 && !consumer(ctx, out, produced)) {
+      LOG_ERR("PDF", "StreamDecoder: chunk consumer rejected %zu bytes", produced);
+      g_fileInflateCtx = nullptr;
+      return false;
+    }
+    if (st == InflateStatus::Done) {
+      break;
+    }
+    if (st == InflateStatus::Error) {
+      LOG_ERR("PDF", "StreamDecoder: inflate error while streaming");
+      g_fileInflateCtx = nullptr;
+      return false;
+    }
+  }
+
+  g_fileInflateCtx = nullptr;
+  return true;
+}
+
+bool StreamDecoder::flateDecodeBytesChunks(const uint8_t* compressed, size_t compressedLen, ChunkConsumer consumer,
+                                           void* ctx) {
+  if (!compressed || compressedLen == 0 || !consumer) return false;
+
+  InflateReader ir;
+  if (!ir.init(false)) {
+    return false;
+  }
+  const size_t zlibSkip = zlibWrapperSkipLen(compressed, compressedLen);
+  if (zlibSkip > compressedLen) {
+    return false;
+  }
+  ir.setSource(compressed + zlibSkip, compressedLen - zlibSkip);
+
+  uint8_t out[256];
+  while (true) {
+    size_t produced = 0;
+    const InflateStatus st = ir.readAtMost(out, sizeof(out), &produced);
+    if (produced > 0 && !consumer(ctx, out, produced)) {
+      LOG_ERR("PDF", "StreamDecoder: chunk consumer rejected %zu bytes", produced);
+      return false;
+    }
+    if (st == InflateStatus::Done) {
+      break;
+    }
+    if (st == InflateStatus::Error) {
+      LOG_ERR("PDF", "StreamDecoder: inflate error while streaming");
+      return false;
+    }
+  }
+  return true;
 }

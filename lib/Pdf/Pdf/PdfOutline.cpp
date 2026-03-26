@@ -155,26 +155,36 @@ uint32_t destStringToPage(const PageTree& pageTree, std::string_view dest) {
   return pageTree.pageIndexForObjectId(static_cast<uint32_t>(id));
 }
 
-void walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t itemId,
+bool walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t firstItemId,
                      PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& out, size_t& count,
                      const size_t maxEntries) {
-  while (itemId != 0 && count < maxEntries) {
-    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-    if (!xref.readDictForObject(file, itemId, body)) break;
+  static PdfFixedVector<uint32_t, PDF_MAX_OUTLINE_ENTRIES * 2> stack;
+  if (firstItemId != 0 && !stack.push_back(firstItemId)) {
+    return false;
+  }
+
+  while (!stack.empty() && count < maxEntries) {
+    const uint32_t itemId = stack.back();
+    stack.pop_back();
+
+    static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+    if (!xref.readDictForObject(file, itemId, body)) {
+      continue;
+    }
 
     PdfOutlineEntry entry;
-    PdfFixedString<PDF_DICT_VALUE_MAX> titleRaw;
+    static PdfFixedString<PDF_DICT_VALUE_MAX> titleRaw;
     if (PdfObject::getDictValue("/Title", body.view(), titleRaw)) {
       decodeTitleValue(std::move(titleRaw), entry.title);
     }
 
-    PdfFixedString<PDF_DICT_VALUE_MAX> dest;
+    static PdfFixedString<PDF_DICT_VALUE_MAX> dest;
     if (!PdfObject::getDictValue("/Dest", body.view(), dest)) {
       dest.clear();
     }
     trimVal(dest);
     if (dest.empty()) {
-      PdfFixedString<PDF_DICT_VALUE_MAX> action;
+      static PdfFixedString<PDF_DICT_VALUE_MAX> action;
       if (PdfObject::getDictValue("/A", body.view(), action) && !action.empty()) {
         if (!PdfObject::getDictValue("/D", action.view(), dest)) {
           dest.clear();
@@ -188,16 +198,22 @@ void walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTr
       if (out.push_back(std::move(entry))) {
         ++count;
       } else {
-        break;
+        return false;
       }
     }
 
-    const uint32_t firstChild = PdfObject::getDictRef("/First", body.view());
-    if (firstChild != 0) {
-      walkOutlineItem(file, xref, pageTree, firstChild, out, count, maxEntries);
+    const uint32_t nextSibling = PdfObject::getDictRef("/Next", body.view());
+    if (nextSibling != 0 && !stack.push_back(nextSibling)) {
+      return false;
     }
-    itemId = PdfObject::getDictRef("/Next", body.view());
+
+    const uint32_t firstChild = PdfObject::getDictRef("/First", body.view());
+    if (firstChild != 0 && !stack.push_back(firstChild)) {
+      return false;
+    }
   }
+
+  return true;
 }
 
 }  // namespace
@@ -209,7 +225,7 @@ bool PdfOutlineParser::parse(FsFile& file, const XrefTable& xref, const PageTree
     return true;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
   if (!xref.readDictForObject(file, outlinesObjId, body)) {
     return true;
   }
@@ -221,6 +237,8 @@ bool PdfOutlineParser::parse(FsFile& file, const XrefTable& xref, const PageTree
 
   size_t count = 0;
   constexpr size_t kMax = PDF_MAX_OUTLINE_ENTRIES;
-  walkOutlineItem(file, xref, pageTree, first, outEntries, count, kMax);
+  if (!walkOutlineItem(file, xref, pageTree, first, outEntries, count, kMax)) {
+    LOG_ERR("PDF", "outline: traversal stopped early");
+  }
   return true;
 }

@@ -4,7 +4,10 @@
 #include <type_traits>
 
 namespace {
-constexpr size_t INFLATE_DICT_SIZE = 32768;
+// Keep the deflate history window intentionally small to avoid large transient RAM use
+// in the PDF/image paths. This is a compromise: some highly-compressed streams may fail
+// closed instead of exhausting the device heap.
+constexpr size_t INFLATE_DICT_SIZE = 16384;
 }
 
 // Guarantee the cast pattern in the header comment is valid.
@@ -47,11 +50,9 @@ void InflateReader::skipZlibHeader() {
 }
 
 bool InflateReader::read(uint8_t* dest, size_t len) {
-  if (!ringBuffer) {
-    // One-shot mode: back-references use absolute offset from dest_start.
-    // Valid only when read() is called once with the full output buffer.
-    decomp.dest_start = dest;
-  }
+  // Keep dest_start aligned with the current output chunk. This keeps the
+  // streaming path valid even when callers reuse a small scratch buffer.
+  decomp.dest_start = dest;
   decomp.dest = dest;
   decomp.dest_limit = dest + len;
 
@@ -61,11 +62,9 @@ bool InflateReader::read(uint8_t* dest, size_t len) {
 }
 
 InflateStatus InflateReader::readAtMost(uint8_t* dest, size_t maxLen, size_t* produced) {
-  if (!ringBuffer) {
-    // One-shot mode: back-references use absolute offset from dest_start.
-    // Valid only when readAtMost() is called once with the full output buffer.
-    decomp.dest_start = dest;
-  }
+  // Keep dest_start aligned with the current output chunk. This keeps the
+  // streaming path valid even when callers reuse a small scratch buffer.
+  decomp.dest_start = dest;
   decomp.dest = dest;
   decomp.dest_limit = dest + maxLen;
 

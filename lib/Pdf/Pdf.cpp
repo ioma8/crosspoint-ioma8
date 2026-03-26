@@ -33,6 +33,22 @@ uint32_t contentsObjectId(std::string_view pageBody) {
   return PdfObject::getDictRef("/Contents", pageBody);
 }
 
+struct CatalogInfo {
+  uint32_t pagesObjId = 0;
+  uint32_t outlinesId = 0;
+};
+
+bool loadCatalogInfo(FsFile& file, const XrefTable& xref, uint32_t rootId, CatalogInfo& info) {
+  static PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
+  info = {};
+  if (rootId == 0 || !xref.readDictForObject(file, rootId, catalogBody)) {
+    return false;
+  }
+  info.pagesObjId = PdfObject::getDictRef("/Pages", catalogBody.view());
+  info.outlinesId = PdfObject::getDictRef("/Outlines", catalogBody.view());
+  return info.pagesObjId != 0;
+}
+
 }  // namespace
 
 Pdf::~Pdf() { close(); }
@@ -76,16 +92,15 @@ bool Pdf::open(const char* path) {
     return false;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
   const uint32_t rootId = xref_.rootObjId();
-  if (rootId == 0 || !xref_.readDictForObject(file_, rootId, catalogBody)) {
+  CatalogInfo catalogInfo;
+  if (!loadCatalogInfo(file_, xref_, rootId, catalogInfo)) {
     LOG_ERR("PDF", "Bad catalog");
     file_.close();
     return false;
   }
 
-  const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody.view());
-  if (pagesObjId == 0 || !pageTree_.parse(file_, xref_, pagesObjId)) {
+  if (!pageTree_.parse(file_, xref_, catalogInfo.pagesObjId)) {
     LOG_ERR("PDF", "Failed to parse page tree");
     file_.close();
     return false;
@@ -97,9 +112,8 @@ bool Pdf::open(const char* path) {
   uint32_t cachedPageCount = 0;
   if (!cache_.loadMeta(cachedPageCount, outlineEntries_) || cachedPageCount != pages_) {
     outlineEntries_.clear();
-    const uint32_t outlinesId = PdfObject::getDictRef("/Outlines", catalogBody.view());
-    if (outlinesId != 0) {
-      PdfOutlineParser::parse(file_, xref_, pageTree_, outlinesId, outlineEntries_);
+    if (catalogInfo.outlinesId != 0) {
+      PdfOutlineParser::parse(file_, xref_, pageTree_, catalogInfo.outlinesId, outlineEntries_);
     }
     cache_.saveMeta(pages_, outlineEntries_);
   }
@@ -113,6 +127,8 @@ bool Pdf::saveProgress(uint32_t page) { return valid_ && cache_.saveProgress(pag
 bool Pdf::loadProgress(uint32_t& page) { return valid_ && cache_.loadProgress(page); }
 
 bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
+  static PdfFixedString<PDF_OBJECT_BODY_MAX> pageBody;
+  static PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
   out.clear();
   if (!valid_ || pageNum >= pages_) {
     return false;
@@ -126,7 +142,6 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
     return false;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> pageBody;
   if (!xref_.readDictForObject(file_, pageObjId, pageBody)) {
     return false;
   }
@@ -137,20 +152,27 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
     return false;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
-  PdfByteBuffer streamPayload;
+  uint32_t streamOffset = 0;
+  uint32_t streamLength = 0;
   bool compressed = false;
-  if (!xref_.readStreamForObject(file_, contentId, contentDict, streamPayload, compressed)) {
-    return false;
-  }
-  if (streamPayload.len == 0) {
-    return false;
-  }
-
-  if (!ContentStream::parseBuffer(streamPayload.ptr(), streamPayload.len, compressed, file_, xref_, pageBody.view(),
-                                   out)) {
-    LOG_ERR("PDF", "Failed to parse page %u", static_cast<unsigned>(pageNum));
-    return false;
+  if (!xref_.readStreamMetaForObject(file_, contentId, contentDict, streamOffset, streamLength, compressed)) {
+    PdfByteBuffer streamPayload;
+    if (!xref_.readStreamForObject(file_, contentId, contentDict, streamPayload, compressed)) {
+      return false;
+    }
+    if (streamPayload.len == 0) {
+      return false;
+    }
+    if (!ContentStream::parseBuffer(streamPayload.ptr(), streamPayload.len, compressed, file_, xref_, pageBody.view(),
+                                    out)) {
+      LOG_ERR("PDF", "Failed to parse page %u", static_cast<unsigned>(pageNum));
+      return false;
+    }
+  } else {
+    if (!ContentStream::parse(file_, streamOffset, streamLength, compressed, xref_, pageBody.view(), out)) {
+      LOG_ERR("PDF", "Failed to parse page %u", static_cast<unsigned>(pageNum));
+      return false;
+    }
   }
 
   cache_.savePage(pageNum, out);

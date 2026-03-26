@@ -12,7 +12,7 @@
 
 PdfReaderChapterSelectionActivity::PdfReaderChapterSelectionActivity(GfxRenderer& renderer,
                                                                      MappedInputManager& mappedInput,
-                                                                     const std::vector<PdfOutlineEntry>& outlineIn,
+                                                                     const PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& outlineIn,
                                                                      uint32_t currentPageZeroBased)
     : Activity("PdfChapterSelection", renderer, mappedInput), outline(outlineIn), currentPage(currentPageZeroBased) {}
 
@@ -123,7 +123,7 @@ void PdfReaderChapterSelectionActivity::render(RenderLock&&) {
     char pageBuf[48];
     snprintf(pageBuf, sizeof(pageBuf), " p.%u",
              static_cast<unsigned>(outline[static_cast<size_t>(itemIndex)].pageNum + 1));
-    std::string line = outline[static_cast<size_t>(itemIndex)].title + pageBuf;
+    std::string line = std::string(outline[static_cast<size_t>(itemIndex)].title.c_str()) + pageBuf;
     line = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), contentWidth - 40);
 
     renderer.drawText(UI_10_FONT_ID, contentX + 20, displayY, line.c_str(), !isSelected);

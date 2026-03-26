@@ -15,7 +15,7 @@ enum class InflateStatus {
 //
 // Two modes:
 //   init(false)  — one-shot: input is a contiguous buffer, call read() once.
-//   init(true)   — streaming: allocates a 32KB ring buffer for back-references
+//   init(true)   — streaming: allocates a small ring buffer for back-references
 //                  across multiple read() / readAtMost() calls.
 //
 // Streaming callback pattern:
@@ -44,7 +44,7 @@ class InflateReader {
   InflateReader(const InflateReader&) = delete;
   InflateReader& operator=(const InflateReader&) = delete;
 
-  // Initialise decompressor. streaming=true allocates a 32KB ring buffer needed
+  // Initialise decompressor. streaming=true allocates a bounded ring buffer needed
   // when read() or readAtMost() will be called multiple times.
   // Returns false only in streaming mode if the ring buffer allocation fails.
   bool init(bool streaming = false);

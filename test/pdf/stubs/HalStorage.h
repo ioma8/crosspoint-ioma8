@@ -1,6 +1,7 @@
 #pragma once
 
 // Host-only in-memory file stand-in for lib/Pdf tests (shadows lib/hal/HalStorage.h).
+#define HAL_STORAGE_STUB 1
 
 #include "Print.h"
 

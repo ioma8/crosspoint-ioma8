@@ -114,7 +114,7 @@ uint32_t resolveStreamLength(FsFile& file, const XrefTable* xref, std::string_vi
   if (loff == 0) {
     return 0;
   }
-  PdfFixedString<PDF_OBJECT_BODY_MAX> lenBody;
+  static PdfFixedString<PDF_OBJECT_BODY_MAX> lenBody;
   if (!PdfObject::readAt(file, loff, lenBody, nullptr, nullptr, nullptr)) {
     return 0;
   }
@@ -135,16 +135,22 @@ bool PdfObject::readAt(FsFile& file, uint32_t offset, PdfFixedString<PDF_OBJECT_
     return false;
   }
 
-  uint8_t chunk[4096];
+  uint8_t chunk[512];
 
   constexpr size_t kMaxAcc = PDF_OBJECT_BODY_MAX;
 
   bool strippedHeader = false;
   while (bodyStr.size() < kMaxAcc) {
-    const int n = file.read(chunk, sizeof(chunk));
+    const size_t remaining = kMaxAcc - bodyStr.size() - 1;
+    if (remaining == 0) {
+      LOG_ERR("PDF", "PdfObject::readAt object body overflow at offset %u (cap=%zu)", offset, kMaxAcc);
+      return false;
+    }
+    const size_t toRead = std::min(remaining, sizeof(chunk));
+    const int n = file.read(chunk, toRead);
     if (n <= 0) break;
     if (!bodyStr.append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(n))) {
-      LOG_ERR("PDF", "PdfObject::readAt object body overflow");
+      LOG_ERR("PDF", "PdfObject::readAt object body overflow at offset %u (cap=%zu)", offset, kMaxAcc);
       return false;
     }
 

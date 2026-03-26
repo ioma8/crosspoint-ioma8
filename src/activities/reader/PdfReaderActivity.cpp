@@ -60,6 +60,7 @@ void PdfReaderActivity::onEnter() {
   }
   layoutReady = false;
   ensureLayout();
+  pageBuffer.clear();
 
   totalPages = pdf->pageCount();
   currentPage = 0;
@@ -67,7 +68,7 @@ void PdfReaderActivity::onEnter() {
     currentPage = totalPages - 1;
   }
 
-  const auto path = pdf->filePath();
+  const auto path = std::string(pdf->filePath().c_str());
   const auto slash = path.find_last_of('/');
   const auto fileName = slash == std::string::npos ? path : path.substr(slash + 1);
   APP_STATE.openEpubPath = path;
@@ -107,7 +108,7 @@ void PdfReaderActivity::loop() {
 
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
     saveProgressNow();
-    activityManager.goToFileBrowser(pdf->filePath());
+    activityManager.goToFileBrowser(std::string(pdf->filePath().c_str()));
     return;
   }
 
@@ -130,7 +131,7 @@ void PdfReaderActivity::loop() {
                                saveProgressNow();
                                onGoHome();
                              } else if (menu.action == PdfReaderMenuActivity::ACTION_OUTLINE) {
-                               startActivityForResult(std::make_unique<PdfReaderChapterSelectionActivity>(
+                                startActivityForResult(std::make_unique<PdfReaderChapterSelectionActivity>(
                                                           renderer, mappedInput, pdf->outline(), currentPage),
                                                       [this](const ActivityResult& res) {
                                                         if (!res.isCancelled) {
@@ -160,7 +161,7 @@ void PdfReaderActivity::renderStatusBar() const {
   const float progress = static_cast<float>(currentPage + 1) * 100.0f / static_cast<float>(totalPages);
   std::string title;
   if (SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE) {
-    const auto path = pdf->filePath();
+    const auto path = std::string(pdf->filePath().c_str());
     const auto slash = path.find_last_of('/');
     title = slash == std::string::npos ? path : path.substr(slash + 1);
   }
@@ -202,14 +203,14 @@ void PdfReaderActivity::renderContents(const PdfPage& page) {
     if (!pdf) {
       return;
     }
-    const std::string& dir = pdf->cacheDirectory();
+    const auto dir = pdf->cacheDirectory().view();
     if (dir.empty()) {
       renderer.drawText(UI_10_FONT_ID, marginLeft, y, tr(STR_PDF_IMAGE_PLACEHOLDER));
       y += lineHeight;
       return;
     }
     const char* name = img.format == 0 ? "_tmpimg.jpg" : "_tmpimg.png";
-    const std::string tmpPath = dir + "/" + name;
+    const std::string tmpPath = std::string(dir) + "/" + name;
     if (img.pdfStreamLength == 0 || img.pdfStreamLength > kMaxPdfImageStreamBytes) {
       renderer.drawText(UI_10_FONT_ID, marginLeft, y, tr(STR_PDF_IMAGE_PLACEHOLDER));
       y += lineHeight;
@@ -322,13 +323,12 @@ void PdfReaderActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  auto page = pdf->getPage(currentPage);
-  if (!page) {
+  if (!pdf->getPage(currentPage, pageBuffer)) {
     renderer.drawCenteredText(UI_12_FONT_ID, 200, tr(STR_PDF_LOAD_ERROR), true, EpdFontFamily::BOLD);
     renderer.displayBuffer();
     return;
   }
 
-  renderContents(*page);
+  renderContents(pageBuffer);
   saveProgressNow();
 }

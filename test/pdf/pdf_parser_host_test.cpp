@@ -41,9 +41,12 @@ void check(bool ok, const char* expr, const char* file, int line) {
   } while (0)
 
 uint32_t contentsObjectId(const std::string& pageBody) {
-  std::string cv = PdfObject::getDictValue("/Contents", pageBody);
+  PdfFixedString<PDF_DICT_VALUE_MAX> cv;
+  if (!PdfObject::getDictValue("/Contents", pageBody, cv)) {
+    return 0;
+  }
   while (!cv.empty() && (cv[0] == ' ' || cv[0] == '\t' || cv[0] == '\r' || cv[0] == '\n')) {
-    cv.erase(0, 1);
+    cv.erase_prefix(1);
   }
   if (cv.empty()) return 0;
   if (!cv.empty() && cv[0] == '[') {
@@ -62,12 +65,17 @@ uint32_t contentsObjectId(const std::string& pageBody) {
 bool parseSinglePage(HalFile& file, const XrefTable& xref, const std::string& pageBody, PdfPage& outPage) {
   const uint32_t contentId = contentsObjectId(pageBody);
   if (contentId == 0) return false;
-  std::string contentDict;
-  std::vector<uint8_t> payload;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
   bool compressed = false;
-  if (!xref.readStreamForObject(file, contentId, contentDict, payload, compressed)) return false;
-  if (payload.empty()) return false;
-  return ContentStream::parseBuffer(payload.data(), payload.size(), compressed, file, xref, pageBody, outPage);
+  uint32_t streamOffset = 0;
+  uint32_t streamLen = 0;
+  if (!xref.readStreamMetaForObject(file, contentId, contentDict, streamOffset, streamLen, compressed)) {
+    PdfByteBuffer payload;
+    if (!xref.readStreamForObject(file, contentId, contentDict, payload, compressed)) return false;
+    if (payload.len == 0) return false;
+    return ContentStream::parseBuffer(payload.ptr(), payload.len, compressed, file, xref, pageBody, outPage);
+  }
+  return ContentStream::parse(file, streamOffset, streamLen, compressed, xref, pageBody, outPage);
 }
 
 struct Expectation {
@@ -142,7 +150,7 @@ void collapseAsciiWhitespace(std::string& s) {
 
 void printFirstTextBlockPreview(const char* label, const PdfPage& page) {
   for (const auto& b : page.textBlocks) {
-    std::string s = b.text;
+    std::string s = std::string(b.text.view());
     collapseAsciiWhitespace(s);
     if (s.empty()) {
       continue;
@@ -168,9 +176,11 @@ bool runOnePdf(const char* path) {
   REQF(xref.parse(file));
 
   std::string catalogBody;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
   const uint32_t rootId = xref.rootObjId();
   REQF(rootId != 0);
-  REQF(xref.readDictForObject(file, rootId, catalogBody));
+  REQF(xref.readDictForObject(file, rootId, catalogBodyFixed));
+  catalogBody = std::string(catalogBodyFixed.view());
 
   const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
   REQF(pagesObjId != 0);
@@ -185,7 +195,7 @@ bool runOnePdf(const char* path) {
     REQF(pageCount >= exp->minPages);
   }
 
-  std::vector<PdfOutlineEntry> outline;
+  PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES> outline;
   const uint32_t outlinesId = PdfObject::getDictRef("/Outlines", catalogBody);
   if (outlinesId != 0) {
     REQF(PdfOutlineParser::parse(file, xref, pageTree, outlinesId, outline));
@@ -198,8 +208,9 @@ bool runOnePdf(const char* path) {
   {
     const uint32_t pageObjId = pageTree.getPageObjectId(0);
     REQF(pageObjId != 0);
-    std::string pageBody;
-    REQF(xref.readDictForObject(file, pageObjId, pageBody));
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
+    std::string pageBody(pageBodyFixed.view());
     REQF(parseSinglePage(file, xref, pageBody, page0));
   }
 
@@ -211,8 +222,9 @@ bool runOnePdf(const char* path) {
     PdfPage page1;
     const uint32_t pageObjId = pageTree.getPageObjectId(1);
     REQF(pageObjId != 0);
-    std::string pageBody;
-    REQF(xref.readDictForObject(file, pageObjId, pageBody));
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
+    std::string pageBody(pageBodyFixed.view());
     REQF(parseSinglePage(file, xref, pageBody, page1));
     if (exp && exp->minTextCharsPage1 > 0) {
       REQF(totalTextChars(page1) >= exp->minTextCharsPage1);

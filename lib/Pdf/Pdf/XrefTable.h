@@ -10,7 +10,8 @@
 #include <string_view>
 
 class XrefTable {
-  uint32_t offsets_[PDF_MAX_OBJECTS]{};
+  // Packed little-endian 24-bit offsets: 3 bytes per object.
+  uint8_t offsets_[PDF_MAX_OBJECTS * 3]{};
   uint32_t offsetCount_ = 0;
   uint32_t rootObjId_ = 0;
 
@@ -24,10 +25,10 @@ class XrefTable {
   };
 
   InlineEntry inline_[PDF_MAX_INLINE_OBJECTS]{};
-  uint8_t loadedObjStm_[PDF_MAX_OBJECTS]{};
+  uint8_t objStmContainers_[(PDF_MAX_OBJECTS + 7) / 8]{};
 
   bool parseXrefStream(FsFile& file, size_t fileSize, uint32_t xrefObjOffset);
-  void loadObjStream(FsFile& file, uint32_t stmObjId);
+  bool loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t targetObjId);
 
   bool insertInlineObject(uint32_t objNum, const PdfFixedString<PDF_INLINE_DICT_MAX>& d, const uint8_t* stm,
                           size_t stmLen);
@@ -44,6 +45,8 @@ class XrefTable {
   void ensureOffsetCount(uint32_t n);
 
   bool readDictForObject(FsFile& file, uint32_t objId, PdfFixedString<PDF_OBJECT_BODY_MAX>& dictBody) const;
+  bool readStreamMetaForObject(FsFile& file, uint32_t objId, PdfFixedString<PDF_OBJECT_BODY_MAX>& dictOut,
+                               uint32_t& streamOffset, uint32_t& streamLength, bool& flateDecode) const;
   bool readStreamForObject(FsFile& file, uint32_t objId, PdfFixedString<PDF_OBJECT_BODY_MAX>& dictOut,
                            PdfByteBuffer& streamPayload, bool& flateDecode) const;
 };

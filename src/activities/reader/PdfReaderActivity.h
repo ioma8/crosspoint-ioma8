@@ -10,6 +10,7 @@ class PdfReaderActivity final : public Activity {
   uint32_t totalPages = 0;
   int pagesUntilFullRefresh = 0;
   uint32_t lastSavedPage = UINT32_MAX;
+  PdfPage pageBuffer;
 
   int cachedFontId = 0;
   int viewportWidth = 0;
