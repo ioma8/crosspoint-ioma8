@@ -13,6 +13,7 @@ namespace {
 constexpr uint8_t kMetaVersion = 1;
 constexpr uint8_t kPageVersionV1 = 1;
 constexpr uint8_t kPageVersionV2 = 2;
+constexpr uint8_t kPageVersionV3 = 3;
 
 size_t hashPathCstr(const char* s) {
   size_t h = 5381;
@@ -152,7 +153,7 @@ bool PdfCache::loadPage(uint32_t pageNum, PdfPage& outPage) {
 
   uint8_t ver = 0;
   serialization::readPod(f, ver);
-  if (ver != kPageVersionV1 && ver != kPageVersionV2) {
+  if (ver != kPageVersionV3) {
     f.close();
     return false;
   }
@@ -248,7 +249,7 @@ bool PdfCache::savePage(uint32_t pageNum, const PdfPage& page) {
     return false;
   }
 
-  serialization::writePod(f, kPageVersionV2);
+  serialization::writePod(f, kPageVersionV3);
   const uint32_t textCount = static_cast<uint32_t>(page.textBlocks.size());
   serialization::writePod(f, textCount);
   for (uint32_t i = 0; i < textCount; ++i) {

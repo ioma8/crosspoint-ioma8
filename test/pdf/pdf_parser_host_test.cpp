@@ -110,6 +110,17 @@ size_t totalTextChars(const PdfPage& p) {
   return n;
 }
 
+void dumpPageText(size_t pageIndex, const PdfPage& page) {
+  std::printf("----- page %zu -----\n", pageIndex + 1);
+  for (const auto& block : page.textBlocks) {
+    const std::string text = std::string(block.text.view());
+    if (!text.empty()) {
+      std::printf("%s\n", text.c_str());
+    }
+  }
+  std::printf("\n");
+}
+
 void collapseAsciiWhitespace(std::string& s) {
   std::string out;
   out.reserve(s.size());
@@ -213,6 +224,10 @@ bool runOnePdf(const char* path) {
     std::string pageBody(pageBodyFixed.view());
     REQF(parseSinglePage(file, xref, pageBody, page0));
   }
+  const bool dumpText = std::getenv("PDF_TEST_DUMP_TEXT") != nullptr;
+  if (dumpText) {
+    dumpPageText(0, page0);
+  }
 
   if (exp && exp->requireTextOnPage0) {
     REQF(totalTextChars(page0) >= exp->minTextCharsPage0);
@@ -226,11 +241,25 @@ bool runOnePdf(const char* path) {
     REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
     std::string pageBody(pageBodyFixed.view());
     REQF(parseSinglePage(file, xref, pageBody, page1));
+    if (dumpText) {
+      dumpPageText(1, page1);
+    }
     if (exp && exp->minTextCharsPage1 > 0) {
       REQF(totalTextChars(page1) >= exp->minTextCharsPage1);
     }
   } else if (exp && exp->minTextCharsPage1 > 0) {
     REQF(false);
+  }
+
+  if (dumpText && pageCount > 2) {
+    PdfPage page2;
+    const uint32_t pageObjId = pageTree.getPageObjectId(2);
+    REQF(pageObjId != 0);
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
+    std::string pageBody(pageBodyFixed.view());
+    REQF(parseSinglePage(file, xref, pageBody, page2));
+    dumpPageText(2, page2);
   }
 
   std::printf("OK  %s  pages=%u  outline=%zu  page0_blocks=%zu  page0_chars~%zu\n", base,
