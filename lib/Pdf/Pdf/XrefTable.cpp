@@ -154,6 +154,64 @@ bool splitObjStmObjectSlice(std::string_view slice, PdfFixedString<PDF_INLINE_DI
   return !dictOut.empty();
 }
 
+[[maybe_unused]] bool readObjStmUnsignedToken(FsFile& file, size_t limit, uint32_t& out) {
+  out = 0;
+  bool haveDigit = false;
+  while (file.position() < limit) {
+    const int ch = file.read();
+    if (ch < 0) {
+      return false;
+    }
+    if (ch >= '0' && ch <= '9') {
+      haveDigit = true;
+      out = static_cast<uint32_t>(out * 10U + static_cast<uint32_t>(ch - '0'));
+      continue;
+    }
+    if (haveDigit) {
+      return true;
+    }
+  }
+  return haveDigit;
+}
+
+[[maybe_unused]] bool scanObjStmHeaderForTarget(FsFile& file, size_t first, int nObj, uint32_t targetObjId,
+                                                uint32_t& targetRel) {
+  if (!file.seek(0)) {
+    return false;
+  }
+  for (int i = 0; i < nObj; ++i) {
+    uint32_t oid = 0;
+    uint32_t rel = 0;
+    if (!readObjStmUnsignedToken(file, first, oid) || !readObjStmUnsignedToken(file, first, rel)) {
+      return false;
+    }
+    if (oid == targetObjId) {
+      targetRel = rel;
+      return true;
+    }
+  }
+  return false;
+}
+
+[[maybe_unused]] bool scanObjStmHeaderForNext(FsFile& file, size_t first, int nObj, uint32_t targetRel,
+                                              uint32_t& nextRel) {
+  if (!file.seek(0)) {
+    return false;
+  }
+  nextRel = 0;
+  for (int i = 0; i < nObj; ++i) {
+    [[maybe_unused]] uint32_t oid = 0;
+    uint32_t rel = 0;
+    if (!readObjStmUnsignedToken(file, first, oid) || !readObjStmUnsignedToken(file, first, rel)) {
+      return false;
+    }
+    if (rel > targetRel && (nextRel == 0 || rel < nextRel)) {
+      nextRel = rel;
+    }
+  }
+  return true;
+}
+
 struct StreamToFileCtx {
   FsFile* file = nullptr;
 };
@@ -634,120 +692,77 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
     return false;
   }
 
-  std::string header;
-  header.reserve(static_cast<size_t>(first));
-  if (!spill.seek(0)) {
+  uint32_t targetRel = 0;
+  if (!scanObjStmHeaderForTarget(spill, static_cast<size_t>(first), nObj, targetObjId, targetRel)) {
     spill.close();
     storage.remove(tempPath);
     return false;
   }
+
+  uint32_t nextRel = 0;
+  if (!scanObjStmHeaderForNext(spill, static_cast<size_t>(first), nObj, targetRel, nextRel)) {
+    spill.close();
+    storage.remove(tempPath);
+    return false;
+  }
+
+  const size_t start = static_cast<size_t>(first) + static_cast<size_t>(targetRel);
+  if (start > spillSize) {
+    spill.close();
+    storage.remove(tempPath);
+    return false;
+  }
+
+  size_t end = spillSize;
+  if (nextRel > targetRel) {
+    const size_t nextStart = static_cast<size_t>(first) + static_cast<size_t>(nextRel);
+    if (nextStart > start && nextStart <= spillSize) {
+      end = nextStart;
+    }
+  }
+
   constexpr size_t kChunk = 256;
   char buf[kChunk];
-  size_t remaining = static_cast<size_t>(first);
-  while (remaining > 0) {
-    const size_t want = std::min(remaining, kChunk);
-    const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
-    if (rd <= 0) {
-      spill.close();
-      storage.remove(tempPath);
-      return false;
-    }
-    header.append(buf, static_cast<size_t>(rd));
-    remaining -= static_cast<size_t>(rd);
-  }
-
-  struct Pair {
-    uint32_t oid = 0;
-    uint32_t rel = 0;
-  };
-  Pair pairs[512];
-  size_t pairCount = 0;
-  {
-    const char* p = header.data();
-    const char* hend = header.data() + header.size();
-    while (p < hend && pairCount < 512) {
-      while (p < hend && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
-      if (p >= hend) break;
-      char* e = nullptr;
-      const unsigned long oid = std::strtoul(p, &e, 10);
-      if (e == p) break;
-      p = e;
-      while (p < hend && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) ++p;
-      const unsigned long rel = std::strtoul(p, &e, 10);
-      if (e == p) break;
-      p = e;
-      pairs[pairCount].oid = static_cast<uint32_t>(oid);
-      pairs[pairCount].rel = static_cast<uint32_t>(rel);
-      ++pairCount;
-    }
-  }
-  if (pairCount < static_cast<size_t>(nObj)) {
+  if (!spill.seek(start)) {
     spill.close();
     storage.remove(tempPath);
     return false;
   }
-
-  const size_t base = static_cast<size_t>(first);
-  for (int i = 0; i < nObj && i < static_cast<int>(pairCount); ++i) {
-    const uint32_t objNum = pairs[static_cast<size_t>(i)].oid;
-    if (objNum != targetObjId) {
-      continue;
-    }
-    const uint32_t rel = pairs[static_cast<size_t>(i)].rel;
-    const size_t start = base + static_cast<size_t>(rel);
-    if (start > spillSize) {
-      continue;
-    }
-    size_t end = spillSize;
-    if (i + 1 < static_cast<int>(pairCount)) {
-      const uint32_t relNext = pairs[static_cast<size_t>(i + 1)].rel;
-      const size_t nextStart = base + static_cast<size_t>(relNext);
-      if (nextStart > start && nextStart <= spillSize) {
-        end = nextStart;
-      }
-    }
-    if (!spill.seek(start)) {
+  std::string slice;
+  slice.reserve(end - start);
+  size_t left = end - start;
+  while (left > 0) {
+    const size_t want = std::min(left, kChunk);
+    const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
+    if (rd <= 0) {
+      slice.clear();
       break;
     }
-    std::string slice;
-    slice.reserve(end - start);
-    size_t left = end - start;
-    while (left > 0) {
-      const size_t want = std::min(left, kChunk);
-      const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
-      if (rd <= 0) {
-        slice.clear();
-        break;
-      }
-      slice.append(buf, static_cast<size_t>(rd));
-      left -= static_cast<size_t>(rd);
-    }
-    spill.close();
-    storage.remove(tempPath);
-    if (slice.empty()) {
-      continue;
-    }
-    while (!slice.empty() && (slice.front() == ' ' || slice.front() == '\t' || slice.front() == '\r' ||
-                              slice.front() == '\n')) {
-      slice.erase(slice.begin());
-    }
-    while (!slice.empty() && (slice.back() == ' ' || slice.back() == '\t' || slice.back() == '\r' ||
-                              slice.back() == '\n')) {
-      slice.pop_back();
-    }
-    if (slice.empty()) {
-      continue;
-    }
-    PdfFixedString<PDF_INLINE_DICT_MAX> d;
-    PdfByteBuffer stm;
-    if (!splitObjStmObjectSlice(slice, d, stm)) {
-      continue;
-    }
-    return insertInlineObject(objNum, d, stm.ptr(), stm.len);
+    slice.append(buf, static_cast<size_t>(rd));
+    left -= static_cast<size_t>(rd);
   }
   spill.close();
   storage.remove(tempPath);
-  return false;
+  if (slice.empty()) {
+    return false;
+  }
+  while (!slice.empty() && (slice.front() == ' ' || slice.front() == '\t' || slice.front() == '\r' ||
+                            slice.front() == '\n')) {
+    slice.erase(slice.begin());
+  }
+  while (!slice.empty() && (slice.back() == ' ' || slice.back() == '\t' || slice.back() == '\r' ||
+                            slice.back() == '\n')) {
+    slice.pop_back();
+  }
+  if (slice.empty()) {
+    return false;
+  }
+  PdfFixedString<PDF_INLINE_DICT_MAX> d;
+  PdfByteBuffer stm;
+  if (!splitObjStmObjectSlice(slice, d, stm)) {
+    return false;
+  }
+  return insertInlineObject(targetObjId, d, stm.ptr(), stm.len);
 #else
   PdfByteBuffer raw;
   const size_t rawLen = StreamDecoder::flateDecode(file, so, sl, raw.ptr(), raw.data.size());
