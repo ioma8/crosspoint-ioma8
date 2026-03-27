@@ -15,6 +15,7 @@
 #include <HalStorage.h>
 #include <InflateReader.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -230,6 +231,133 @@ void testPdfPageNavigationPolicy() {
   REQUIRE(pdfPageTurnBackward(state, 3));
   REQUIRE(state.page == 0);
   REQUIRE(state.slice == 2);
+}
+
+void testPageTreeInvalidObjectIdIsNotPageZero() {
+  HalFile file;
+  REQUIRE(file.loadPath("test/pdf/sample.pdf"));
+
+  XrefTable xref;
+  REQUIRE(xref.parse(file));
+
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
+  REQUIRE(xref.readDictForObject(file, xref.rootObjId(), catalogBodyFixed));
+  const std::string catalogBody(catalogBodyFixed.view());
+
+  const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
+  REQUIRE(pagesObjId != 0);
+
+  PageTree pageTree;
+  REQUIRE(pageTree.parse(file, xref, pagesObjId));
+  REQUIRE(pageTree.pageIndexForObjectId(xref.rootObjId()) == UINT32_MAX);
+}
+
+std::string makeLiteral(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 2);
+  out.push_back('(');
+  for (char c : s) {
+    if (c == '(' || c == ')' || c == '\\') {
+      out.push_back('\\');
+    }
+    out.push_back(c);
+  }
+  out.push_back(')');
+  return out;
+}
+
+std::string makeSyntheticOutlinePdf() {
+  struct Obj {
+    uint32_t id;
+    std::string body;
+  };
+
+  std::vector<Obj> objs = {
+      {1, "<< /Type /Catalog /Pages 2 0 R /Outlines 6 0 R /Names 7 0 R >>"},
+      {2, "<< /Type /Pages /Count 2 /Kids [ 4 0 R 5 0 R ] >>"},
+      {4, "<< /Type /Page /Parent 2 0 R >>"},
+      {5, "<< /Type /Page /Parent 2 0 R >>"},
+      {6, "<< /Type /Outlines /First 12 0 R /Count 3 >>"},
+      {7, "<< /Dests 8 0 R >>"},
+      {8, "<< /Names [ (Chapter1) 20 0 R (DirectDest) [ 5 0 R /XYZ 0 400 0 ] ] >>"},
+      {12, "<< /Title " + makeLiteral("Slash Name") + " /A << /S /GoTo /D /Chapter1 >> /Parent 6 0 R /Next 13 0 R >>"},
+      {13, "<< /Title " + makeLiteral("Direct Array") + " /A << /S /GoTo /D /DirectDest >> /Parent 6 0 R /Prev 12 0 R /Next 14 0 R >>"},
+      {14, "<< /Title " + makeLiteral("Chapter (1)") + " /A << /S /GoTo /D /Chapter1 >> /Parent 6 0 R /Prev 13 0 R >>"},
+      {20, "[ 4 0 R /XYZ 0 700 0 ]"},
+  };
+
+  std::sort(objs.begin(), objs.end(), [](const Obj& a, const Obj& b) { return a.id < b.id; });
+
+  std::string pdf = "%PDF-1.4\n%\xFF\xFF\xFF\xFF\n";
+  std::vector<std::pair<uint32_t, size_t>> offsets;
+  offsets.reserve(objs.size() + 1);
+  offsets.push_back({0, 0});
+  for (const auto& obj : objs) {
+    offsets.push_back({obj.id, pdf.size()});
+    pdf += std::to_string(obj.id);
+    pdf += " 0 obj\n";
+    pdf += obj.body;
+    pdf += "\nendobj\n";
+  }
+
+  const size_t xrefPos = pdf.size();
+  const uint32_t maxObjId = 20;
+  pdf += "xref\n0 " + std::to_string(maxObjId + 1) + "\n";
+  pdf += "0000000000 65535 f \n";
+  for (uint32_t id = 1; id <= maxObjId; ++id) {
+    const auto it = std::find_if(offsets.begin(), offsets.end(), [id](const auto& p) { return p.first == id; });
+    const size_t off = it == offsets.end() ? 0 : it->second;
+    char line[32];
+    std::snprintf(line, sizeof(line), "%010zu 00000 n \n", off);
+    pdf += line;
+  }
+  pdf += "trailer\n<< /Size " + std::to_string(maxObjId + 1) + " /Root 1 0 R >>\n";
+  pdf += "startxref\n" + std::to_string(xrefPos) + "\n%%EOF\n";
+  return pdf;
+}
+
+std::filesystem::path writeSyntheticOutlinePdf() {
+  const std::filesystem::path path = std::filesystem::path("test/pdf/build") / "outline_resolver_test.pdf";
+  std::filesystem::create_directories(path.parent_path());
+  const std::string pdf = makeSyntheticOutlinePdf();
+  FILE* f = std::fopen(path.string().c_str(), "wb");
+  REQUIRE(f != nullptr);
+  REQUIRE(std::fwrite(pdf.data(), 1, pdf.size(), f) == pdf.size());
+  REQUIRE(std::fclose(f) == 0);
+  return path;
+}
+
+void testOutlineResolutionVariants() {
+  const std::filesystem::path path = writeSyntheticOutlinePdf();
+  HalFile file;
+  REQUIRE(file.loadPath(path.c_str()));
+
+  XrefTable xref;
+  REQUIRE(xref.parse(file));
+
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
+  REQUIRE(xref.readDictForObject(file, xref.rootObjId(), catalogBodyFixed));
+  const std::string catalogBody(catalogBodyFixed.view());
+
+  const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
+  const uint32_t outlinesId = PdfObject::getDictRef("/Outlines", catalogBody);
+  const uint32_t namesObjId = PdfObject::getDictRef("/Names", catalogBody);
+  REQUIRE(pagesObjId != 0);
+  REQUIRE(outlinesId != 0);
+  REQUIRE(namesObjId != 0);
+
+  PageTree pageTree;
+  REQUIRE(pageTree.parse(file, xref, pagesObjId));
+
+  PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES> outline;
+  REQUIRE(PdfOutlineParser::parse(file, xref, pageTree, outlinesId, namesObjId, outline));
+  REQUIRE(outline.size() == 3);
+  REQUIRE(std::string(outline[0].title.c_str()) == "Slash Name");
+  REQUIRE(std::string(outline[1].title.c_str()) == "Direct Array");
+  REQUIRE(std::string(outline[2].title.c_str()) == "Chapter (1)");
+  REQUIRE(outline[0].pageNum == 0);
+  REQUIRE(outline[1].pageNum == 1);
+  REQUIRE(outline[2].pageNum == 0);
 }
 
 void testPdfCachedPageReader() {
@@ -540,10 +668,14 @@ bool runOnePdf(const char* path) {
 
   PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES> outline;
   const uint32_t outlinesId = PdfObject::getDictRef("/Outlines", catalogBody);
+  const uint32_t namesObjId = PdfObject::getDictRef("/Names", catalogBody);
   if (outlinesId != 0) {
-    REQF(PdfOutlineParser::parse(file, xref, pageTree, outlinesId, outline));
+    REQF(PdfOutlineParser::parse(file, xref, pageTree, outlinesId, namesObjId, outline));
     if (exp && exp->minOutlineEntries > 0) {
       REQF(outline.size() >= exp->minOutlineEntries);
+    }
+    for (size_t i = 0; i < outline.size(); ++i) {
+      REQUIRE(outline[i].pageNum < pageCount);
     }
   }
 
@@ -634,6 +766,8 @@ bool runOnePdf(const char* path) {
 
 int main(int argc, char** argv) {
   testPdfPageNavigationPolicy();
+  testPageTreeInvalidObjectIdIsNotPageZero();
+  testOutlineResolutionVariants();
   testPdfCachedPageReader();
   testInflateReaderLongWindowStreaming();
   testPreviewMatchesPdftotext();

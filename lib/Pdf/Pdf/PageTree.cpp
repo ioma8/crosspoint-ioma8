@@ -199,10 +199,10 @@ uint32_t PageTree::getPageObjectId(uint32_t pageIndex) const {
 uint32_t PageTree::pageIndexForObjectId(uint32_t objId) const {
   if (pageIndexMapReady_ && objId < PDF_MAX_OBJECTS) {
     const uint16_t idx = pageIndexByObjectId_[objId];
-    return (idx == kInvalidPageIndex) ? 0 : static_cast<uint32_t>(idx);
+    return (idx == kInvalidPageIndex) ? UINT32_MAX : static_cast<uint32_t>(idx);
   }
   for (size_t i = 0; i < pageObjectIds.size(); ++i) {
     if (pageObjectIds[i] == objId) return static_cast<uint32_t>(i);
   }
-  return 0;
+  return UINT32_MAX;
 }

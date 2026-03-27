@@ -39,6 +39,7 @@ uint32_t contentsObjectId(std::string_view pageBody) {
 struct CatalogInfo {
   uint32_t pagesObjId = 0;
   uint32_t outlinesId = 0;
+  uint32_t namesObjId = 0;
 };
 
 uint32_t hashBytes(const uint8_t* data, size_t len) {
@@ -74,6 +75,7 @@ bool loadCatalogInfo(FsFile& file, const XrefTable& xref, uint32_t rootId, Catal
   }
   info.pagesObjId = PdfObject::getDictRef("/Pages", catalogBody.view());
   info.outlinesId = PdfObject::getDictRef("/Outlines", catalogBody.view());
+  info.namesObjId = PdfObject::getDictRef("/Names", catalogBody.view());
   return info.pagesObjId != 0;
 }
 
@@ -146,7 +148,7 @@ bool Pdf::parseFromSource(bool needsOutlines) {
   if (needsOutlines) {
     outlineEntries_.clear();
     if (catalogInfo.outlinesId != 0) {
-      PdfOutlineParser::parse(file_, xref_, pageTree_, catalogInfo.outlinesId, outlineEntries_);
+      PdfOutlineParser::parse(file_, xref_, pageTree_, catalogInfo.outlinesId, catalogInfo.namesObjId, outlineEntries_);
     }
   }
 

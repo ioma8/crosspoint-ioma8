@@ -16,5 +16,6 @@ struct PdfOutlineEntry {
 class PdfOutlineParser {
  public:
   static bool parse(FsFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t outlinesObjId,
+                    uint32_t namesObjId,
                     PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& outEntries);
 };
