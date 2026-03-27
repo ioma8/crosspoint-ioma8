@@ -11,7 +11,8 @@ fn main() {
 #[cfg(target_arch = "riscv32")]
 use esp_hal::{
     analog::adc::{Adc, AdcConfig, Attenuation},
-    gpio::{Input, InputConfig, Pull},
+    delay::Delay,
+    gpio::{Input, InputConfig, Pull, RtcPinWithResistors},
     time::{Duration, Instant},
     main,
 };
@@ -43,8 +44,20 @@ fn main() -> ! {
     let mut adc_config = AdcConfig::new();
 
     let button_adc_pins = pin_setup_spec();
+    // Match full `HalGPIO::begin()` pin setup: USB detect input is configured before
+    // ADC/button setup in the production firmware.
+    let _usb_detect = Input::new(peripherals.GPIO20, InputConfig::default());
+
+    // Match C++ `InputManager::begin()` and clear potential RTC pull state on the ADC lines.
+    peripherals.GPIO1.rtcio_pullup(false);
+    peripherals.GPIO1.rtcio_pulldown(false);
+    peripherals.GPIO2.rtcio_pullup(false);
+    peripherals.GPIO2.rtcio_pulldown(false);
+
     let mut adc1_pin_1 = adc_config.enable_pin(peripherals.GPIO1, Attenuation::_11dB);
     let mut adc1_pin_2 = adc_config.enable_pin(peripherals.GPIO2, Attenuation::_11dB);
+
+    peripherals.GPIO3.rtcio_pulldown(false);
 
     // Preserve required firmware semantics from InputManager::begin().
     // - GPIO1: INPUT (analog path -> no pull resistors)
@@ -66,6 +79,7 @@ fn main() -> ! {
 
     let mut adc1 = Adc::new(peripherals.ADC1, adc_config);
     let loop_delay = Duration::from_millis(1000);
+    let delay = Delay::new();
 
     fn button_index_from_adc(value: u16, ranges: &[i32], num_buttons: usize) -> Option<u8> {
         let raw = i32::from(value);
@@ -79,37 +93,29 @@ fn main() -> ! {
 
     loop {
         let now = Instant::now();
-        let mut pin_1: u16 = 0;
-        let mut pin_2: u16 = 0;
-        let mut pin_1_samples: u32 = 0;
-        let mut pin_2_samples: u32 = 0;
+        let pin_1: u16;
+        let pin_2: u16;
 
-        // Keep the same conversion path as C++ firmware, but average a few samples to reduce noise.
-        for _ in 0..4 {
-            match block!(adc1.read_oneshot(&mut adc1_pin_1)) {
-                Ok(value) => pin_1_samples += u32::from(value),
-                Err(_) => {
-                    println!("adc1 GPIO1 read failed (oneshot error)");
-                    continue;
-                }
+        // Mirror C++ firmware behavior: one fresh oneshot conversion per channel.
+        // Averaging can suppress low-voltage ladder values used by Right/Down.
+        pin_1 = match block!(adc1.read_oneshot(&mut adc1_pin_1)) {
+            Ok(value) => value,
+            Err(_) => {
+                println!("adc1 GPIO1 read failed (oneshot error)");
+                0
             }
+        };
 
-            match block!(adc1.read_oneshot(&mut adc1_pin_2)) {
-                Ok(value) => pin_2_samples += u32::from(value),
-                Err(_) => {
-                    println!("adc1 GPIO2 read failed (oneshot error)");
-                    continue;
-                }
+        // Small settle delay to reduce cross-channel coupling between ladder reads.
+        delay.delay_micros(50);
+
+        pin_2 = match block!(adc1.read_oneshot(&mut adc1_pin_2)) {
+            Ok(value) => value,
+            Err(_) => {
+                println!("adc2 GPIO2 read failed (oneshot error)");
+                0
             }
-        }
-
-        if pin_1_samples > 0 {
-            pin_1 = u16::try_from(pin_1_samples / 4).unwrap_or(u16::MAX);
-        }
-
-        if pin_2_samples > 0 {
-            pin_2 = u16::try_from(pin_2_samples / 4).unwrap_or(u16::MAX);
-        }
+        };
         let power_state = if power_button.is_low() { "LOW" } else { "HIGH" };
 
         let btn1 = button_index_from_adc(pin_1, &ADC_RANGES_1, 4).map_or("none", |idx| match idx {
