@@ -75,6 +75,37 @@ bool writeFixedString(FsFile& f, const PdfFixedString<N>& s) {
   return true;
 }
 
+template <size_t N, typename Writer>
+bool saveAtomic(const char* moduleName, const PdfFixedString<N>& path, const char* tempSuffix, Writer&& writeFn) {
+  PdfFixedString<N> tmpPath = path;
+  if (!tmpPath.append(tempSuffix, std::strlen(tempSuffix))) {
+    return false;
+  }
+  Storage.remove(tmpPath.c_str());
+  FsFile f;
+  if (!Storage.openFileForWrite(moduleName, tmpPath.c_str(), f)) {
+    return false;
+  }
+  const bool ok = writeFn(f);
+  f.flush();
+  f.close();
+  if (!ok) {
+    Storage.remove(tmpPath.c_str());
+    return false;
+  }
+  if (Storage.rename(tmpPath.c_str(), path.c_str())) {
+    return true;
+  }
+  if (Storage.exists(path.c_str())) {
+    Storage.remove(path.c_str());
+    if (Storage.rename(tmpPath.c_str(), path.c_str())) {
+      return true;
+    }
+  }
+  Storage.remove(tmpPath.c_str());
+  return false;
+}
+
 }  // namespace
 
 void PdfCache::configure(const char* pdfFilePath, size_t fileSize) {
@@ -141,24 +172,20 @@ bool PdfCache::saveMeta(uint32_t pageCount,
   if (!path.append("/meta.bin", 9)) {
     return false;
   }
-  FsFile f;
-  if (!Storage.openFileForWrite("PDF", path.c_str(), f)) {
-    return false;
-  }
-  serialization::writePod(f, kMetaVersion);
-  serialization::writePod(f, pageCount);
-  const uint32_t outlineCount =
-      static_cast<uint32_t>(std::min(outline.size(), static_cast<size_t>(PDF_MAX_OUTLINE_ENTRIES)));
-  serialization::writePod(f, outlineCount);
-  for (uint32_t i = 0; i < outlineCount; ++i) {
-    serialization::writePod(f, outline[i].pageNum);
-    if (!writeFixedString(f, outline[i].title)) {
-      f.close();
-      return false;
+  return saveAtomic("PDF", path, ".tmp", [&](FsFile& f) {
+    serialization::writePod(f, kMetaVersion);
+    serialization::writePod(f, pageCount);
+    const uint32_t outlineCount =
+        static_cast<uint32_t>(std::min(outline.size(), static_cast<size_t>(PDF_MAX_OUTLINE_ENTRIES)));
+    serialization::writePod(f, outlineCount);
+    for (uint32_t i = 0; i < outlineCount; ++i) {
+      serialization::writePod(f, outline[i].pageNum);
+      if (!writeFixedString(f, outline[i].title)) {
+        return false;
+      }
     }
-  }
-  f.close();
-  return true;
+    return true;
+  });
 }
 
 bool PdfCache::loadPage(uint32_t pageNum, PdfPage& outPage) {
@@ -272,40 +299,35 @@ bool PdfCache::savePage(uint32_t pageNum, const PdfPage& page) {
   if (!path.append("/", 1) || !appendUnsigned(path, static_cast<size_t>(pageNum)) || !path.append(".bin", 4)) {
     return false;
   }
-  FsFile f;
-  if (!Storage.openFileForWrite("PDF", path.c_str(), f)) {
-    return false;
-  }
-
-  serialization::writePod(f, kPageVersionV5);
-  const uint32_t textCount = static_cast<uint32_t>(page.textBlocks.size());
-  serialization::writePod(f, textCount);
-  for (uint32_t i = 0; i < textCount; ++i) {
-    if (!writeFixedString(f, page.textBlocks[i].text)) {
-      f.close();
-      return false;
+  return saveAtomic("PDF", path, ".tmp", [&](FsFile& f) {
+    serialization::writePod(f, kPageVersionV5);
+    const uint32_t textCount = static_cast<uint32_t>(page.textBlocks.size());
+    serialization::writePod(f, textCount);
+    for (uint32_t i = 0; i < textCount; ++i) {
+      if (!writeFixedString(f, page.textBlocks[i].text)) {
+        return false;
+      }
+      serialization::writePod(f, page.textBlocks[i].style);
+      serialization::writePod(f, page.textBlocks[i].orderHint);
     }
-    serialization::writePod(f, page.textBlocks[i].style);
-    serialization::writePod(f, page.textBlocks[i].orderHint);
-  }
-  const uint32_t imageCount = static_cast<uint32_t>(page.images.size());
-  serialization::writePod(f, imageCount);
-  for (uint32_t i = 0; i < imageCount; ++i) {
-    serialization::writePod(f, page.images[i].pdfStreamOffset);
-    serialization::writePod(f, page.images[i].pdfStreamLength);
-    serialization::writePod(f, page.images[i].width);
-    serialization::writePod(f, page.images[i].height);
-    serialization::writePod(f, page.images[i].format);
-  }
-  const uint32_t drawCount = static_cast<uint32_t>(page.drawOrder.size());
-  serialization::writePod(f, drawCount);
-  for (uint32_t i = 0; i < drawCount; ++i) {
-    const uint8_t im = page.drawOrder[i].isImage ? uint8_t{1} : uint8_t{0};
-    serialization::writePod(f, im);
-    serialization::writePod(f, page.drawOrder[i].index);
-  }
-  f.close();
-  return true;
+    const uint32_t imageCount = static_cast<uint32_t>(page.images.size());
+    serialization::writePod(f, imageCount);
+    for (uint32_t i = 0; i < imageCount; ++i) {
+      serialization::writePod(f, page.images[i].pdfStreamOffset);
+      serialization::writePod(f, page.images[i].pdfStreamLength);
+      serialization::writePod(f, page.images[i].width);
+      serialization::writePod(f, page.images[i].height);
+      serialization::writePod(f, page.images[i].format);
+    }
+    const uint32_t drawCount = static_cast<uint32_t>(page.drawOrder.size());
+    serialization::writePod(f, drawCount);
+    for (uint32_t i = 0; i < drawCount; ++i) {
+      const uint8_t im = page.drawOrder[i].isImage ? uint8_t{1} : uint8_t{0};
+      serialization::writePod(f, im);
+      serialization::writePod(f, page.drawOrder[i].index);
+    }
+    return true;
+  });
 }
 
 bool PdfCache::loadProgress(uint32_t& currentPage) {
@@ -330,13 +352,10 @@ bool PdfCache::saveProgress(uint32_t currentPage) {
   if (!path.append("/progress.bin", 13)) {
     return false;
   }
-  FsFile f;
-  if (!Storage.openFileForWrite("PDF", path.c_str(), f)) {
-    return false;
-  }
-  serialization::writePod(f, currentPage);
-  f.close();
-  return true;
+  return saveAtomic("PDF", path, ".tmp", [&](FsFile& f) {
+    serialization::writePod(f, currentPage);
+    return true;
+  });
 }
 
 void PdfCache::invalidate() { Storage.removeDir(cacheDir.c_str()); }
