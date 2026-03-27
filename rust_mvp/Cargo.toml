@@ -1,0 +1,12 @@
+[package]
+name = "esp32c3-button-adc-mvp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+esp-bootloader-esp-idf = { version = "0.4", default-features = false, features = ["esp32c3", "esp-rom-sys"] }
+esp-hal = { version = "1", default-features = false, features = ["esp32c3", "rt", "unstable", "log-04"] }
+esp-println = { version = "0.13", default-features = false, features = ["esp32c3", "jtag-serial"] }
+nb = "1"

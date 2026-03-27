@@ -1,0 +1,6 @@
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --chip esp32c3 --monitor"
+rustflags = [
+    "-C", "link-arg=-Tlinkall.x",
+    "-C", "force-frame-pointers",
+]
