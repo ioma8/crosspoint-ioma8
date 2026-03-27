@@ -88,6 +88,73 @@ impl PinCombination {
 }
 
 #[cfg(target_arch = "riscv32")]
+#[derive(Default)]
+struct ComboStats {
+    sample_count: u32,
+    detected_count: u32,
+    button_low_to_high: u32,
+    button_high_to_low: u32,
+    max_run: u32,
+    current_run: u32,
+    min_raw: u16,
+    max_raw: u16,
+    last_detected: Option<bool>,
+}
+
+#[cfg(target_arch = "riscv32")]
+impl ComboStats {
+    fn begin(mut self) -> Self {
+        self.sample_count = 0;
+        self.detected_count = 0;
+        self.button_low_to_high = 0;
+        self.button_high_to_low = 0;
+        self.max_run = 0;
+        self.current_run = 0;
+        self.min_raw = u16::MAX;
+        self.max_raw = 0;
+        self.last_detected = None;
+        self
+    }
+
+    fn observe(&mut self, detected: bool, raw: u16) {
+        self.sample_count = self.sample_count.saturating_add(1);
+        self.min_raw = self.min_raw.min(raw);
+        self.max_raw = self.max_raw.max(raw);
+
+        match (self.last_detected, detected) {
+            (Some(false), true) => {
+                self.button_low_to_high = self.button_low_to_high.saturating_add(1);
+                self.current_run = 1;
+            }
+            (Some(true), false) => {
+                self.button_high_to_low = self.button_high_to_low.saturating_add(1);
+                self.max_run = self.max_run.max(self.current_run);
+                self.current_run = 0;
+            }
+            (Some(true), true) => {
+                self.current_run = self.current_run.saturating_add(1);
+            }
+            (Some(false), false) | (None, false) => {
+                self.max_run = self.max_run.max(self.current_run);
+                self.current_run = 0;
+            }
+            (None, true) => {
+                self.current_run = 1;
+            }
+        }
+        if detected {
+            self.detected_count = self.detected_count.saturating_add(1);
+        }
+        self.last_detected = Some(detected);
+    }
+
+    fn finish(mut self) -> Self {
+        self.max_run = self.max_run.max(self.current_run);
+        self
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
 #[inline]
 fn apply_rtc_pin_pull<Pin>(pin: &mut Pin, mode: ResistorState)
 where
@@ -187,7 +254,7 @@ fn main() -> ! {
     }
 
     let mut adc1 = Adc::new(peripherals.ADC1, adc_config);
-    let loop_delay = Duration::from_millis(1_000);
+    let loop_delay = Duration::from_millis(250);
     let experiment_window = Duration::from_millis(5_000);
 
     loop {
@@ -201,6 +268,7 @@ fn main() -> ! {
             println!("=== EXPERIMENT: {} ===", combo.name);
             combo.print_label();
             let window_start = Instant::now();
+            let mut stats = ComboStats::default().begin();
 
             while Instant::now() - window_start < experiment_window {
                 let now = Instant::now();
@@ -208,7 +276,7 @@ fn main() -> ! {
                     Ok(value) => value,
                     Err(_) => {
                         println!("adc1 GPIO1 read failed (oneshot error)");
-                        0
+                    0
                     }
                 };
 
@@ -230,10 +298,12 @@ fn main() -> ! {
                     2 => "Left",
                     _ => "Right",
                 });
+                let detected = btn1 != "none";
                 let btn2 = button_index_from_adc(pin_2, &ADC_RANGES_2, 2).map_or("none", |idx| match idx {
                     0 => "Up",
                     _ => "Down",
                 });
+                stats.observe(detected, pin_1);
 
                 println!(
                     "adc1={} ({}) adc2={} ({}) power={} (GPIO{}), usb={} | delta={:?}",
@@ -249,6 +319,17 @@ fn main() -> ! {
 
                 while Instant::now() - now < loop_delay {}
             }
+
+            let stats = stats.finish();
+            println!(
+                "summary: samples={} adc1_detected={} transitions={} max_press_run={} pin1_raw[min={}, max={}]",
+                stats.sample_count,
+                stats.detected_count,
+                stats.button_low_to_high.saturating_add(stats.button_high_to_low),
+                stats.max_run,
+                stats.min_raw,
+                stats.max_raw
+            );
         }
     }
 }
