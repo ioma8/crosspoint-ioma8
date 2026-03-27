@@ -132,16 +132,20 @@ bool parseBracketInts(std::string_view src, PdfFixedVector<int, 32>& out) {
 }
 
 size_t findStreamKeywordSlice(std::string_view s) {
-  static const char pat[] = "\nstream";
-  constexpr size_t plen = 7;
+  static const char pat[] = "stream";
+  constexpr size_t plen = 6;
   size_t pos = 0;
   while (pos + plen <= s.size()) {
     if (std::memcmp(s.data() + pos, pat, plen) == 0) {
-      return pos + 1;
-    }
-    if (pos + 8 <= s.size() && s[pos] == '\r' && s[pos + 1] == '\n' &&
-        std::memcmp(s.data() + pos + 2, "stream", 6) == 0) {
-      return pos + 2;
+      const char prev = pos == 0 ? '\0' : s[pos - 1];
+      const bool prevOk = prev == ' ' || prev == '\t' || prev == '\r' || prev == '\n' || prev == '\0' || prev == '/' ||
+                          prev == '<' || prev == '>' || prev == '[' || prev == ']' || prev == '(' || prev == ')';
+      const size_t after = pos + plen;
+      const bool nextOk = after >= s.size() || s[after] == ' ' || s[after] == '\t' || s[after] == '\r' || s[after] == '\n' ||
+                          s[after] == '\0';
+      if (prevOk && nextOk) {
+        return pos;
+      }
     }
     ++pos;
   }

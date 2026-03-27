@@ -43,7 +43,9 @@ $CXX $STD -Wall -Wextra -O2 "${INCLUDES[@]}" "${SOURCES[@]}" "$OUT_DIR/tinflate.
 
 if [[ $# -eq 0 ]]; then
   set -- "$ROOT/test/pdf/sample.pdf" "$ROOT/test/pdf/EE-366.pdf" "$ROOT/test/pdf/esp32-c6_datasheet_en.pdf" \
-    "$ROOT/test/pdf/Problem-Solving Treatment_ Learning and Pl - IHS.pdf"
+    "$ROOT/test/pdf/Problem-Solving Treatment_ Learning and Pl - IHS.pdf" \
+    "$ROOT/test/pdf/Klient Vikingové CZ, spol. s r.o..pdf" \
+    "$ROOT/test/pdf/Turtledove_RoadNotTaken.pdf"
 fi
 
 echo "Running PDF parser host tests..."

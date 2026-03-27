@@ -10,19 +10,23 @@
 namespace {
 
 size_t findStreamKeywordSv(std::string_view s, size_t start) {
-  static const char pat[] = "\nstream";
-  constexpr size_t plen = 7;
+  static const char pat[] = "stream";
+  constexpr size_t plen = 6;
   if (start >= s.size()) {
     return std::string_view::npos;
   }
   size_t pos = start;
   while (pos + plen <= s.size()) {
     if (std::memcmp(s.data() + pos, pat, plen) == 0) {
-      return pos + 1;
-    }
-    if (pos + 8 <= s.size() && s[pos] == '\r' && s[pos + 1] == '\n' &&
-        std::memcmp(s.data() + pos + 2, "stream", 6) == 0) {
-      return pos + 2;
+      const char prev = pos == 0 ? '\0' : s[pos - 1];
+      const bool prevOk = (prev == ' ' || prev == '\t' || prev == '\r' || prev == '\n' || prev == '\0' || prev == '/' ||
+                          prev == '<' || prev == '>' || prev == '[' || prev == ']' || prev == '(' || prev == ')');
+      const size_t afterPos = pos + plen;
+      const bool nextOk = (afterPos >= s.size()) || (s[afterPos] == ' ' || s[afterPos] == '\t' || s[afterPos] == '\r' ||
+                                                      s[afterPos] == '\n' || s[afterPos] == '\0');
+      if (prevOk && nextOk) {
+        return pos;
+      }
     }
     ++pos;
   }
