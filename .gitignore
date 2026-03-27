@@ -9,6 +9,8 @@ lib/I18n/I18nStrings.cpp
 *.generated.h
 .vs
 build
+rust_mvp/target
+**/target
 **/__pycache__/
 /compile_commands.json
 /.cache
