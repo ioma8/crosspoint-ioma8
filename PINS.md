@@ -58,6 +58,7 @@ This document lists the pins explicitly used by the firmware source (`main`, HAL
   - GPIO3 maps to `BTN_POWER`, active LOW.
 - Logical names consumed by app:
   - `HalGPIO::BTN_BACK = 0`, `BTN_CONFIRM = 1`, `BTN_LEFT = 2`, `BTN_RIGHT = 3`, `BTN_UP = 4`, `BTN_DOWN = 5`, `BTN_POWER = 6`.
+- Confirmed user press order for this board sample: `Back -> Confirm -> Left -> Right -> Down -> Up`.
 
 ## Important cross-connection notes
 
@@ -75,3 +76,47 @@ This document lists the pins explicitly used by the firmware source (`main`, HAL
   - `GPIO1` in `float` or `pull_up` -> `adc1_detected=0`, `pin1_raw[min=max=4095]`.
   - `GPIO1` in `pull_down` -> `adc1_detected` rises (e.g. 7–13/20 samples in a 5s window with no manual tap/noise filter), with `pin1_raw[min≈3751..3755, max=4095)` and decoded as `Back`.
 - This strongly indicates an idle-bias dependence on GPIO1 for this channel; `GPIO1` can be too floating/high without explicit down-bias for deterministic button decoding.
+
+## Exact runtime mapping used in final MVP logger (verified on-device)
+
+- Decoder logic:
+  - MVP uses direct 12dB register reads from `APB_SARADC::sar1data_status().saradc1_data` by default.
+  - For mapping stability, values are decoded from raw register samples without extra bit truncation.
+  - Same threshold order is applied: `GPIO1` -> `Back, Confirm, Left, Right`; `GPIO2` -> `Up, Down`.
+- `Idle` sample examples (12dB run): `raw:adc1≈11550` / `raw:adc2≈19730`.
+- Observed button samples used to calibrate this board (12dB run):
+  - `Back`: `raw:adc1≈10811`, `raw:adc2≈19726-19736`
+  - `Confirm`: `raw:adc1≈10266`, `raw:adc2≈19726-19727`
+  - `Left`: `raw:adc1≈9433`, `raw:adc2≈19726-19735`
+  - `Right`: `raw:adc1≈8198`, `raw:adc2≈19727-19735`
+  - `Down`: `raw:adc1≈11550`, `raw:adc2≈16390`
+  - `Up`: `raw:adc1≈11551`, `raw:adc2≈18142`
+- Current calibrated thresholds in this MVP:
+  - `GPIO1 (pin1)`: `[11400, 10280, 9800, 8400, i32::MIN]` (`Back`, `Confirm`, `Left`, `Right`)
+  - `GPIO2 (pin2)`: `[19300, 17200, i32::MIN]` (`Up`, `Down`)
+
+## Rust MVP final electrical contract (current sample)
+
+- Pin setup used by the validated loop:
+  - `GPIO1 = INPUT + PULLDOWN`, uses ADC1 channel 1.
+  - `GPIO2 = INPUT + PULLDOWN`, uses ADC1 channel 2.
+  - `GPIO3 = INPUT + PULLDOWN`, power button input.
+  - `GPIO20 = INPUT + PULLDOWN`, USB detect input.
+- Attenuation:
+  - Bypassed esp-hal sample API and writes `onetime_atten = 0x03` (12dB request) directly to `APB_SARADC::onetime_sample`.
+  - This is fixed by default; no env var switch is used.
+- Decoding rules used in firmware:
+  - `GPIO1 (ADC1_CH1)`:
+    - `val > 11400` → `none`
+    - `10280 < val <= 11400` → `Back`
+    - `9800 < val <= 10280` → `Confirm`
+    - `8400 < val <= 9800` → `Left`
+    - `val <= 8400` → `Right`
+  - `GPIO2 (ADC1_CH2)`:
+    - `val > 19300` → `none`
+    - `17200 < val <= 19300` → `Up`
+    - `val <= 17200` → `Down`
+- Read path and timing:
+  - read `ADC1_CH1`, 1ms settle, then read `ADC1_CH2`
+  - no filtering/stability windows in production loop
+  - output at 1 Hz: `button=<Button>`

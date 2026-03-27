@@ -13,8 +13,9 @@ use esp_hal::{
     analog::adc::{Adc, AdcConfig, Attenuation},
     delay::Delay,
     gpio::{Input, InputConfig, Pull, RtcPinWithResistors},
-    time::{Duration, Instant},
     main,
+    peripherals::APB_SARADC,
+    time::{Duration, Instant},
 };
 
 #[cfg(target_arch = "riscv32")]
@@ -24,11 +25,9 @@ esp_bootloader_esp_idf::esp_app_desc!();
 use esp_println::println;
 
 #[cfg(target_arch = "riscv32")]
-use nb::block;
-
-#[cfg(target_arch = "riscv32")]
 use esp32c3_button_adc_mvp::pin_config::{
-    pin_setup_spec, BUTTON_ADC_PIN_1, BUTTON_ADC_PIN_2, POWER_BUTTON_PIN, ADC_RANGES_1, ADC_RANGES_2,
+    ADC_RANGES_1, ADC_RANGES_1_12DB, ADC_RANGES_2, ADC_RANGES_2_12DB, BUTTON_ADC_PIN_1,
+    BUTTON_ADC_PIN_2, POWER_BUTTON_PIN, pin_setup_spec,
 };
 
 #[cfg(target_arch = "riscv32")]
@@ -39,6 +38,13 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 
 #[cfg(target_arch = "riscv32")]
 #[derive(Debug, Clone, Copy)]
+enum ReadMode {
+    OnetimeBypass { raw_atten_bits: u8 },
+}
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 enum ResistorState {
     Floating,
     PullUp,
@@ -88,70 +94,134 @@ impl PinCombination {
 }
 
 #[cfg(target_arch = "riscv32")]
-#[derive(Default)]
-struct ComboStats {
-    sample_count: u32,
-    detected_count: u32,
-    button_low_to_high: u32,
-    button_high_to_low: u32,
-    max_run: u32,
-    current_run: u32,
-    min_raw: u16,
-    max_raw: u16,
-    last_detected: Option<bool>,
+const SAMPLE_SETTLE_DELAY_US: u32 = 1000;
+
+#[cfg(target_arch = "riscv32")]
+const ADC_ATTEN_BITS_12DB: u8 = 0x03;
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy)]
+enum Button {
+    None,
+    Back,
+    Confirm,
+    Left,
+    Right,
+    Up,
+    Down,
 }
 
 #[cfg(target_arch = "riscv32")]
-impl ComboStats {
-    fn begin(mut self) -> Self {
-        self.sample_count = 0;
-        self.detected_count = 0;
-        self.button_low_to_high = 0;
-        self.button_high_to_low = 0;
-        self.max_run = 0;
-        self.current_run = 0;
-        self.min_raw = u16::MAX;
-        self.max_raw = 0;
-        self.last_detected = None;
-        self
-    }
-
-    fn observe(&mut self, detected: bool, raw: u16) {
-        self.sample_count = self.sample_count.saturating_add(1);
-        self.min_raw = self.min_raw.min(raw);
-        self.max_raw = self.max_raw.max(raw);
-
-        match (self.last_detected, detected) {
-            (Some(false), true) => {
-                self.button_low_to_high = self.button_low_to_high.saturating_add(1);
-                self.current_run = 1;
-            }
-            (Some(true), false) => {
-                self.button_high_to_low = self.button_high_to_low.saturating_add(1);
-                self.max_run = self.max_run.max(self.current_run);
-                self.current_run = 0;
-            }
-            (Some(true), true) => {
-                self.current_run = self.current_run.saturating_add(1);
-            }
-            (Some(false), false) | (None, false) => {
-                self.max_run = self.max_run.max(self.current_run);
-                self.current_run = 0;
-            }
-            (None, true) => {
-                self.current_run = 1;
-            }
+impl Button {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Back => "Back",
+            Self::Confirm => "Confirm",
+            Self::Left => "Left",
+            Self::Right => "Right",
+            Self::Up => "Up",
+            Self::Down => "Down",
         }
-        if detected {
-            self.detected_count = self.detected_count.saturating_add(1);
-        }
-        self.last_detected = Some(detected);
     }
+}
 
-    fn finish(mut self) -> Self {
-        self.max_run = self.max_run.max(self.current_run);
-        self
+#[cfg(target_arch = "riscv32")]
+const DEFAULT_READ_MODE: ReadMode = ReadMode::OnetimeBypass {
+    raw_atten_bits: ADC_ATTEN_BITS_12DB,
+};
+
+#[cfg(target_arch = "riscv32")]
+fn attenuation_label(mode: ReadMode) -> &'static str {
+    match mode {
+        ReadMode::OnetimeBypass { .. } => "12dB (onetime bypass)",
     }
+}
+
+#[cfg(target_arch = "riscv32")]
+#[inline]
+fn read_adc1_oneshot_raw(channel: u8, attenuation_bits: u8) -> u16 {
+    // Direct one-shot path using APB_SARADC register block, bypassing esp-hal ADC API.
+    let masked = attenuation_bits & 0x03;
+    APB_SARADC::regs().onetime_sample().modify(|_, w| unsafe {
+        w.saradc1_onetime_sample().set_bit();
+        w.onetime_channel().bits(channel);
+        w.onetime_atten().bits(masked)
+    });
+    APB_SARADC::regs()
+        .onetime_sample()
+        .modify(|_, w| w.onetime_start().set_bit());
+    while !APB_SARADC::regs().int_raw().read().adc1_done().bit() {}
+
+    let value = APB_SARADC::regs()
+        .sar1data_status()
+        .read()
+        .saradc1_data()
+        .bits() as u16;
+
+    APB_SARADC::regs()
+        .int_clr()
+        .write(|w| w.adc1_done().clear_bit_by_one());
+    APB_SARADC::regs()
+        .onetime_sample()
+        .modify(|_, w| w.onetime_start().clear_bit());
+
+    value
+}
+
+#[cfg(target_arch = "riscv32")]
+#[inline]
+fn decode_button_from_ranges(raw: u16, decode_pin1: bool, atten_12db: bool) -> Option<Button> {
+    let value = i32::from(raw);
+    let (ranges, labels): (&[i32], &[Button]) = if decode_pin1 {
+        if atten_12db {
+            const LABELS: [Button; 4] =
+                [Button::Back, Button::Confirm, Button::Left, Button::Right];
+            (&ADC_RANGES_1_12DB, &LABELS)
+        } else {
+            const LABELS: [Button; 4] =
+                [Button::Back, Button::Confirm, Button::Left, Button::Right];
+            (&ADC_RANGES_1, &LABELS)
+        }
+    } else if atten_12db {
+        return if value <= ADC_RANGES_2_12DB[1] {
+            Some(Button::Down)
+        } else if value <= ADC_RANGES_2_12DB[0] {
+            Some(Button::Up)
+        } else {
+            None
+        };
+    } else {
+        // Mapping mirrors legacy 11dB/12-bit-API behavior: Up, Down.
+        if value <= ADC_RANGES_2[1] {
+            return Some(Button::Down);
+        }
+        if value <= ADC_RANGES_2[0] && value > ADC_RANGES_2[1] {
+            return Some(Button::Up);
+        }
+        return None;
+    };
+
+    // For pin1 paths, walk the descending range table.
+    for i in 0..labels.len() {
+        if ranges[i + 1] < value && value <= ranges[i] {
+            return Some(labels[i]);
+        }
+    }
+    None
+}
+
+#[cfg(target_arch = "riscv32")]
+#[inline]
+fn decode_button(
+    pin1_norm: u16,
+    pin2_norm: u16,
+    atten_12db: bool,
+) -> (Option<Button>, Option<Button>) {
+    (
+        decode_button_from_ranges(pin1_norm, true, atten_12db),
+        decode_button_from_ranges(pin2_norm, false, atten_12db),
+    )
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -180,6 +250,7 @@ where
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
+    let read_mode = DEFAULT_READ_MODE;
     let mut adc_config = AdcConfig::new();
     let delay = Delay::new();
 
@@ -199,137 +270,71 @@ fn main() -> ! {
 
     peripherals.GPIO3.rtcio_pulldown(false);
 
-    // Preserve required firmware semantics from InputManager::begin().
-    // - GPIO1: INPUT (analog path -> no pull resistors)
-    // - GPIO2: INPUT (analog path -> no pull resistors)
-    // - GPIO3: INPUT_PULLUP
-    // - ADC attenuation: 11dB
-    let mut power_button = Input::new(peripherals.GPIO3, InputConfig::default().with_pull(Pull::Up));
-    // Next experiment: isolate GPIO1 state impact while keeping other pins at baseline behavior.
-    let combos = [
-        PinCombination {
-            name: "g1-float-g2-float-g3-up",
-            adc_pin1: ResistorState::Floating,
-            adc_pin2: ResistorState::Floating,
-            power_pin3: ResistorState::PullUp,
-            usb_pin20: ResistorState::Floating,
-        },
-        PinCombination {
-            name: "g1-up-g2-float-g3-up",
-            adc_pin1: ResistorState::PullUp,
-            adc_pin2: ResistorState::Floating,
-            power_pin3: ResistorState::PullUp,
-            usb_pin20: ResistorState::Floating,
-        },
-        PinCombination {
-            name: "g1-down-g2-float-g3-up",
-            adc_pin1: ResistorState::PullDown,
-            adc_pin2: ResistorState::Floating,
-            power_pin3: ResistorState::PullUp,
-            usb_pin20: ResistorState::Floating,
-        },
-    ];
-
-    println!(
-        "setup: InputManager::begin() parity checks done; entering 5-second pull-mode experiment loop"
+    // Working wiring for this board: force tested pins to pull-down during ADC reads.
+    let mut power_button = Input::new(
+        peripherals.GPIO3,
+        InputConfig::default().with_pull(Pull::Down),
     );
-    println!("GPIO1 = ADC ADC1_CH1, GPIO2 = ADC ADC1_CH2, GPIO3 = power input, GPIO20 = USB detect");
+    let combo = PinCombination {
+        name: "g1-down-g2-down-g3-down-g20-down",
+        adc_pin1: ResistorState::PullDown,
+        adc_pin2: ResistorState::PullDown,
+        power_pin3: ResistorState::PullDown,
+        usb_pin20: ResistorState::PullDown,
+    };
+
+    println!("setup: entering raw button decoder loop");
+    println!(
+        "adc_attn={} (direct register path)",
+        attenuation_label(read_mode)
+    );
+    println!(
+        "GPIO1 = ADC ADC1_CH1, GPIO2 = ADC ADC1_CH2, GPIO3 = power input, GPIO20 = USB detect"
+    );
+    println!("Printing: raw pin readings + 12-bit-decoded button mapping.");
+    println!("Wire mappings (from C++ InputManager):");
+    println!("  GPIO1: Back -> Confirm -> Left -> Right");
+    println!("  GPIO2: Up -> Down");
 
     // Validate the required logical setup at startup.
     debug_assert_eq!(button_adc_pins.adc_pins(), &[1, 2]);
-    debug_assert_eq!(button_adc_pins.adc_attenuation_db(), 11);
     debug_assert_eq!(button_adc_pins.power_button_pin(), 3);
 
-    debug_assert_eq!(button_adc_pins.adc_pins(), &[BUTTON_ADC_PIN_1, BUTTON_ADC_PIN_2]);
+    debug_assert_eq!(
+        button_adc_pins.adc_pins(),
+        &[BUTTON_ADC_PIN_1, BUTTON_ADC_PIN_2]
+    );
     debug_assert_eq!(button_adc_pins.power_button_pin(), POWER_BUTTON_PIN);
 
-    fn button_index_from_adc(value: u16, ranges: &[i32], num_buttons: usize) -> Option<u8> {
-        let raw = i32::from(value);
-        for i in 0..num_buttons {
-            if ranges[i + 1] < raw && raw <= ranges[i] {
-                return Some(i as u8);
-            }
-        }
-        None
-    }
+    let _adc1 = Adc::new(peripherals.ADC1, adc_config);
+    let loop_delay = Duration::from_secs(1);
 
-    let mut adc1 = Adc::new(peripherals.ADC1, adc_config);
-    let loop_delay = Duration::from_millis(250);
-    let experiment_window = Duration::from_millis(5_000);
+    apply_rtc_pin_pull(&mut adc1_pin_1.pin, combo.adc_pin1);
+    apply_rtc_pin_pull(&mut adc1_pin_2.pin, combo.adc_pin2);
+    power_button.apply_config(&combo.power_pin3.as_input_config());
+    usb_detect.apply_config(&combo.usb_pin20.as_input_config());
+
+    println!();
+    println!("=== EXPERIMENT: {} ===", combo.name);
+    combo.print_label();
+    println!("bypass: reading raw SAR1_DATA register directly");
 
     loop {
-        for combo in combos {
-            apply_rtc_pin_pull(&mut adc1_pin_1.pin, combo.adc_pin1);
-            apply_rtc_pin_pull(&mut adc1_pin_2.pin, combo.adc_pin2);
-            power_button.apply_config(&combo.power_pin3.as_input_config());
-            usb_detect.apply_config(&combo.usb_pin20.as_input_config());
+        let now = Instant::now();
+        let ReadMode::OnetimeBypass { raw_atten_bits } = read_mode;
+        let raw_1 = read_adc1_oneshot_raw(1, raw_atten_bits);
 
-            println!();
-            println!("=== EXPERIMENT: {} ===", combo.name);
-            combo.print_label();
-            let window_start = Instant::now();
-            let mut stats = ComboStats::default().begin();
+        delay.delay_micros(SAMPLE_SETTLE_DELAY_US);
 
-            while Instant::now() - window_start < experiment_window {
-                let now = Instant::now();
-                let pin_1 = match block!(adc1.read_oneshot(&mut adc1_pin_1)) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        println!("adc1 GPIO1 read failed (oneshot error)");
-                    0
-                    }
-                };
+        let raw_2 = read_adc1_oneshot_raw(2, raw_atten_bits);
 
-                // Small settle delay to reduce cross-channel coupling between ladder reads.
-                delay.delay_micros(50);
+        let (norm_1, norm_2) = (raw_1, raw_2);
 
-                let pin_2 = match block!(adc1.read_oneshot(&mut adc1_pin_2)) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        println!("adc2 GPIO2 read failed (oneshot error)");
-                        0
-                    }
-                };
+        let atten_12db = true;
+        let (pin1_button, pin2_button) = decode_button(norm_1, norm_2, atten_12db);
+        let button = pin1_button.or(pin2_button).unwrap_or(Button::None);
+        println!("button={}", button.as_str());
 
-                let power_state = if power_button.is_low() { "LOW" } else { "HIGH" };
-                let btn1 = button_index_from_adc(pin_1, &ADC_RANGES_1, 4).map_or("none", |idx| match idx {
-                    0 => "Back",
-                    1 => "Confirm",
-                    2 => "Left",
-                    _ => "Right",
-                });
-                let detected = btn1 != "none";
-                let btn2 = button_index_from_adc(pin_2, &ADC_RANGES_2, 2).map_or("none", |idx| match idx {
-                    0 => "Up",
-                    _ => "Down",
-                });
-                stats.observe(detected, pin_1);
-
-                println!(
-                    "adc1={} ({}) adc2={} ({}) power={} (GPIO{}), usb={} | delta={:?}",
-                    pin_1,
-                    btn1,
-                    pin_2,
-                    btn2,
-                    power_state,
-                    button_adc_pins.power_button_pin(),
-                    usb_detect.is_low(),
-                    Instant::now() - now
-                );
-
-                while Instant::now() - now < loop_delay {}
-            }
-
-            let stats = stats.finish();
-            println!(
-                "summary: samples={} adc1_detected={} transitions={} max_press_run={} pin1_raw[min={}, max={}]",
-                stats.sample_count,
-                stats.detected_count,
-                stats.button_low_to_high.saturating_add(stats.button_high_to_low),
-                stats.max_run,
-                stats.min_raw,
-                stats.max_raw
-            );
-        }
+        while Instant::now() - now < loop_delay {}
     }
 }

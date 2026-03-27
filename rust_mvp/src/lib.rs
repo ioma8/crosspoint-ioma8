@@ -80,9 +80,14 @@ pub mod pin_config {
     pub const BUTTON_ADC_PIN_2: u8 = 2;
     pub const POWER_BUTTON_PIN: u8 = 3;
 
-    /// Same debounce/threshold tables used by the firmware's InputManager.
+    /// Baseline threshold tables for firmware 11dB/legacy mode.
     pub const ADC_RANGES_1: [i32; 5] = [3800, 3100, 2090, 750, i32::MIN];
     pub const ADC_RANGES_2: [i32; 3] = [3800, 1120, i32::MIN];
+
+    /// Calibrated 12dB raw-threshold tables with small headroom for stable reads on
+    /// this board sample (ESP32-C3, GPIO1/2 ladder network).
+    pub const ADC_RANGES_1_12DB: [i32; 5] = [11400, 10280, 9800, 8400, i32::MIN];
+    pub const ADC_RANGES_2_12DB: [i32; 3] = [19300, 17200, i32::MIN];
 }
 
 pub use pin_config::{AtLeast, ButtonPinConfig, pin_setup_spec};
