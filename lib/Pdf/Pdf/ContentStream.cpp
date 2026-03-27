@@ -725,8 +725,10 @@ struct FontInfo {
   }
 
   const std::string_view fbodyView = fbody.view();
-  currentFontStyle = fontStyleFromDict(fbodyView);
-  if (fbodyView.find("/MacRomanEncoding") != std::string_view::npos) {
+  const bool usesMacRoman = (fbodyView.find("/MacRomanEncoding") != std::string_view::npos);
+  const uint8_t dictStyle = fontStyleFromDict(fbodyView);
+  currentFontStyle = dictStyle;
+  if (usesMacRoman) {
     currentSimpleEncoding = SimpleFontEncoding::MacRoman;
   }
   auto it = fontInfoCache.find(fid);
@@ -735,8 +737,8 @@ struct FontInfo {
     if (loadToUnicodeMapForFont(file, xref, fid, info.map) && !info.map.empty()) {
       info.hasMap = true;
     }
-    info.style = fontStyleFromDict(fbodyView);
-    if (fbodyView.find("/MacRomanEncoding") != std::string_view::npos) {
+    info.style = dictStyle;
+    if (usesMacRoman) {
       info.encoding = SimpleFontEncoding::MacRoman;
     }
     it = fontInfoCache.insert({fid, std::move(info)}).first;
@@ -1125,6 +1127,11 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   const std::string xobjDict = getXObjectDict(resBody);
   const std::string fontDictBody = resolveFontDict(file, xref, pageObjectBody);
   std::unordered_map<uint32_t, FontInfo> fontInfoCache;
+  std::unordered_map<std::string, uint32_t> fontNameCache;
+  std::unordered_map<std::string, uint32_t> xobjNameCache;
+  fontInfoCache.reserve(16);
+  fontNameCache.reserve(8);
+  xobjNameCache.reserve(8);
   const ToUnicodeMap* currentCidMap = nullptr;
   SimpleFontEncoding currentSimpleFontEncoding = SimpleFontEncoding::WinAnsi;
   PdfMatrix currentCtm;
@@ -1323,12 +1330,25 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       stack.pop_back();
       const std::string fontName = stack.back();
       stack.pop_back();
+      auto fontIdIt = fontNameCache.find(fontName);
+      if (fontIdIt == fontNameCache.end()) {
+        const uint32_t fontId = fontObjectIdForName(fontDictBody, fontName);
+        fontIdIt = fontNameCache.emplace(fontName, fontId).first;
+      }
+      if (fontIdIt->second == 0) {
+        continue;
+      }
       updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontInfoCache, currentCidMap,
                                  currentSimpleFontEncoding);
     } else if (op == "Do" && !stack.empty()) {
       const std::string name = stack.back();
       stack.pop_back();
-      const uint32_t xid = xobjectIdForName(xobjDict, name);
+      auto xobjIt = xobjNameCache.find(name);
+      if (xobjIt == xobjNameCache.end()) {
+        const uint32_t xobjId = xobjectIdForName(xobjDict, name);
+        xobjIt = xobjNameCache.emplace(name, xobjId).first;
+      }
+      const uint32_t xid = xobjIt->second;
       if (xid != 0) {
         PdfImageDescriptor img{};
         if (fillImageDescriptor(file, xref, xid, img)) {
