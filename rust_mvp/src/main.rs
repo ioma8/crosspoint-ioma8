@@ -38,15 +38,88 @@ fn panic(_: &core::panic::PanicInfo<'_>) -> ! {
 }
 
 #[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy)]
+enum ResistorState {
+    Floating,
+    PullUp,
+    PullDown,
+}
+
+#[cfg(target_arch = "riscv32")]
+impl ResistorState {
+    fn as_label(&self) -> &'static str {
+        match self {
+            Self::Floating => "float",
+            Self::PullUp => "pull_up",
+            Self::PullDown => "pull_down",
+        }
+    }
+
+    fn as_input_config(self) -> InputConfig {
+        match self {
+            Self::Floating => InputConfig::default(),
+            Self::PullUp => InputConfig::default().with_pull(Pull::Up),
+            Self::PullDown => InputConfig::default().with_pull(Pull::Down),
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+#[derive(Debug, Clone, Copy)]
+struct PinCombination {
+    name: &'static str,
+    adc_pin1: ResistorState,
+    adc_pin2: ResistorState,
+    power_pin3: ResistorState,
+    usb_pin20: ResistorState,
+}
+
+#[cfg(target_arch = "riscv32")]
+impl PinCombination {
+    fn print_label(&self) {
+        println!(
+            "configuration: GPIO1: {} | GPIO2: {} | GPIO3: {} | GPIO20: {}",
+            self.adc_pin1.as_label(),
+            self.adc_pin2.as_label(),
+            self.power_pin3.as_label(),
+            self.usb_pin20.as_label(),
+        )
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
+#[inline]
+fn apply_rtc_pin_pull<Pin>(pin: &mut Pin, mode: ResistorState)
+where
+    Pin: RtcPinWithResistors,
+{
+    match mode {
+        ResistorState::Floating => {
+            pin.rtcio_pullup(false);
+            pin.rtcio_pulldown(false);
+        }
+        ResistorState::PullUp => {
+            pin.rtcio_pullup(true);
+            pin.rtcio_pulldown(false);
+        }
+        ResistorState::PullDown => {
+            pin.rtcio_pullup(false);
+            pin.rtcio_pulldown(true);
+        }
+    }
+}
+
+#[cfg(target_arch = "riscv32")]
 #[main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut adc_config = AdcConfig::new();
+    let delay = Delay::new();
 
     let button_adc_pins = pin_setup_spec();
     // Match full `HalGPIO::begin()` pin setup: USB detect input is configured before
     // ADC/button setup in the production firmware.
-    let _usb_detect = Input::new(peripherals.GPIO20, InputConfig::default());
+    let mut usb_detect = Input::new(peripherals.GPIO20, InputConfig::default());
 
     // Match C++ `InputManager::begin()` and clear potential RTC pull state on the ADC lines.
     peripherals.GPIO1.rtcio_pullup(false);
@@ -64,10 +137,84 @@ fn main() -> ! {
     // - GPIO2: INPUT (analog path -> no pull resistors)
     // - GPIO3: INPUT_PULLUP
     // - ADC attenuation: 11dB
-    let power_button = Input::new(peripherals.GPIO3, InputConfig::default().with_pull(Pull::Up));
+    let mut power_button = Input::new(peripherals.GPIO3, InputConfig::default().with_pull(Pull::Up));
+    let combos = [
+        PinCombination {
+            name: "baseline-cpp-match",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "g3-down-g20-float",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullDown,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "g1-up-g2-float-g3-up",
+            adc_pin1: ResistorState::PullUp,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "g1-float-g2-up-g3-up",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::PullUp,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "g1-down-g2-float-g3-up",
+            adc_pin1: ResistorState::PullDown,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "g1-float-g2-down-g3-up",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::PullDown,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "safe-random-1: g1-up-g2-down-g3-down",
+            adc_pin1: ResistorState::PullUp,
+            adc_pin2: ResistorState::PullDown,
+            power_pin3: ResistorState::PullDown,
+            usb_pin20: ResistorState::Floating,
+        },
+        PinCombination {
+            name: "usb-pullup-only",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::PullUp,
+        },
+        PinCombination {
+            name: "usb-pulldown-only",
+            adc_pin1: ResistorState::Floating,
+            adc_pin2: ResistorState::Floating,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::PullDown,
+        },
+        PinCombination {
+            name: "all-pullups",
+            adc_pin1: ResistorState::PullUp,
+            adc_pin2: ResistorState::PullUp,
+            power_pin3: ResistorState::PullUp,
+            usb_pin20: ResistorState::PullUp,
+        },
+    ];
+
     println!(
-        "setup: GPIO1/2 input-floating for ADC, GPIO3 input-pullup, ADC attenuation=11dB (InputManager::begin())"
+        "setup: InputManager::begin() parity checks done; entering 5-second pull-mode experiment loop"
     );
+    println!("GPIO1 = ADC ADC1_CH1, GPIO2 = ADC ADC1_CH2, GPIO3 = power input, GPIO20 = USB detect");
 
     // Validate the required logical setup at startup.
     debug_assert_eq!(button_adc_pins.adc_pins(), &[1, 2]);
@@ -76,10 +223,6 @@ fn main() -> ! {
 
     debug_assert_eq!(button_adc_pins.adc_pins(), &[BUTTON_ADC_PIN_1, BUTTON_ADC_PIN_2]);
     debug_assert_eq!(button_adc_pins.power_button_pin(), POWER_BUTTON_PIN);
-
-    let mut adc1 = Adc::new(peripherals.ADC1, adc_config);
-    let loop_delay = Duration::from_millis(1000);
-    let delay = Delay::new();
 
     fn button_index_from_adc(value: u16, ranges: &[i32], num_buttons: usize) -> Option<u8> {
         let raw = i32::from(value);
@@ -91,49 +234,69 @@ fn main() -> ! {
         None
     }
 
+    let mut adc1 = Adc::new(peripherals.ADC1, adc_config);
+    let loop_delay = Duration::from_millis(1_000);
+    let experiment_window = Duration::from_millis(5_000);
+
     loop {
-        let now = Instant::now();
-        let pin_1: u16;
-        let pin_2: u16;
+        for combo in combos {
+            apply_rtc_pin_pull(&mut adc1_pin_1.pin, combo.adc_pin1);
+            apply_rtc_pin_pull(&mut adc1_pin_2.pin, combo.adc_pin2);
+            power_button.apply_config(&combo.power_pin3.as_input_config());
+            usb_detect.apply_config(&combo.usb_pin20.as_input_config());
 
-        // Mirror C++ firmware behavior: one fresh oneshot conversion per channel.
-        // Averaging can suppress low-voltage ladder values used by Right/Down.
-        pin_1 = match block!(adc1.read_oneshot(&mut adc1_pin_1)) {
-            Ok(value) => value,
-            Err(_) => {
-                println!("adc1 GPIO1 read failed (oneshot error)");
-                0
+            println!();
+            println!("=== EXPERIMENT: {} ===", combo.name);
+            combo.print_label();
+            let window_start = Instant::now();
+
+            while Instant::now() - window_start < experiment_window {
+                let now = Instant::now();
+                let pin_1 = match block!(adc1.read_oneshot(&mut adc1_pin_1)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        println!("adc1 GPIO1 read failed (oneshot error)");
+                        0
+                    }
+                };
+
+                // Small settle delay to reduce cross-channel coupling between ladder reads.
+                delay.delay_micros(50);
+
+                let pin_2 = match block!(adc1.read_oneshot(&mut adc1_pin_2)) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        println!("adc2 GPIO2 read failed (oneshot error)");
+                        0
+                    }
+                };
+
+                let power_state = if power_button.is_low() { "LOW" } else { "HIGH" };
+                let btn1 = button_index_from_adc(pin_1, &ADC_RANGES_1, 4).map_or("none", |idx| match idx {
+                    0 => "Back",
+                    1 => "Confirm",
+                    2 => "Left",
+                    _ => "Right",
+                });
+                let btn2 = button_index_from_adc(pin_2, &ADC_RANGES_2, 2).map_or("none", |idx| match idx {
+                    0 => "Up",
+                    _ => "Down",
+                });
+
+                println!(
+                    "adc1={} ({}) adc2={} ({}) power={} (GPIO{}), usb={} | delta={:?}",
+                    pin_1,
+                    btn1,
+                    pin_2,
+                    btn2,
+                    power_state,
+                    button_adc_pins.power_button_pin(),
+                    usb_detect.is_low(),
+                    Instant::now() - now
+                );
+
+                while Instant::now() - now < loop_delay {}
             }
-        };
-
-        // Small settle delay to reduce cross-channel coupling between ladder reads.
-        delay.delay_micros(50);
-
-        pin_2 = match block!(adc1.read_oneshot(&mut adc1_pin_2)) {
-            Ok(value) => value,
-            Err(_) => {
-                println!("adc2 GPIO2 read failed (oneshot error)");
-                0
-            }
-        };
-        let power_state = if power_button.is_low() { "LOW" } else { "HIGH" };
-
-        let btn1 = button_index_from_adc(pin_1, &ADC_RANGES_1, 4).map_or("none", |idx| match idx {
-            0 => "Back",
-            1 => "Confirm",
-            2 => "Left",
-            _ => "Right",
-        });
-        let btn2 = button_index_from_adc(pin_2, &ADC_RANGES_2, 2).map_or("none", |idx| match idx {
-            0 => "Up",
-            _ => "Down",
-        });
-
-        println!(
-            "adc1={} ({}) adc2={} ({}) power={} (GPIO{})",
-            pin_1, btn1, pin_2, btn2, power_state, button_adc_pins.power_button_pin()
-        );
-
-        while Instant::now() - now < loop_delay {}
+        }
     }
 }
