@@ -147,6 +147,67 @@ void dumpPageText(size_t pageIndex, const PdfPage& page) {
   std::printf("\n");
 }
 
+static bool isAsciiAlnum(char c) {
+  return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+}
+
+static void appendTokenWithSpacing(std::string& out, const std::string& token) {
+  if (token.empty()) {
+    return;
+  }
+  if (out.empty()) {
+    out += token;
+    return;
+  }
+
+  const char prev = out.back();
+  const char curr = token.front();
+  if (prev == '\n') {
+    out += token;
+    return;
+  }
+  const bool prevIsAlnum = isAsciiAlnum(prev);
+  const bool currIsAlnum = isAsciiAlnum(curr);
+  const bool prevEndsJoin = prev == '-' || prev == '/' || prev == '(' || prev == '[' || prev == '{';
+  const bool currStartsJoin = curr == '-' || curr == '/' || curr == ')' || curr == ']' || curr == '}' || curr == ',' ||
+                              curr == '.' || curr == ':' || curr == ';' || curr == '!' || curr == '?';
+  if (!prevEndsJoin && !currStartsJoin && prevIsAlnum && currIsAlnum) {
+    out.push_back(' ');
+  } else if (!prevEndsJoin && !currStartsJoin && prev != ' ' && curr != ' ') {
+    out.push_back(' ');
+  }
+  out += token;
+}
+
+std::string buildPageLinePreview(const PdfPage& page) {
+  std::string preview;
+  bool havePrevHint = false;
+  uint32_t prevHint = 0;
+  for (const auto& block : page.textBlocks) {
+    std::string token = std::string(block.text.view());
+    if (token.empty()) {
+      continue;
+    }
+    const bool lineBreak = havePrevHint && std::abs(static_cast<int>(block.orderHint) - static_cast<int>(prevHint)) >= 10;
+    if (lineBreak) {
+      if (!preview.empty() && preview.back() != '\n') {
+        preview.push_back('\n');
+      }
+      if (!preview.empty() && std::abs(static_cast<int>(block.orderHint) - static_cast<int>(prevHint)) <= 200) {
+        preview.push_back('\n');
+      }
+    }
+
+    if (!preview.empty() && preview.back() != '\n' && (!havePrevHint || lineBreak)) {
+      preview.push_back('\n');
+    }
+    appendTokenWithSpacing(preview, token);
+    prevHint = block.orderHint;
+    havePrevHint = true;
+  }
+  return preview;
+}
+
 void testPdfPageNavigationPolicy() {
   PdfPageNavigationState state{};
   REQUIRE(state.page == 0);
@@ -271,6 +332,7 @@ void testInflateReaderLongWindowStreaming() {
   ctx.compressedLen = compressed.size();
   REQUIRE(ctx.reader.init(true));
   ctx.reader.setReadCallback(inflateStreamCallback);
+  ctx.reader.skipZlibHeader();
 
   std::vector<uint8_t> out;
   out.resize(plainLen);
@@ -348,6 +410,90 @@ void printFirstTextBlockPreview(const char* label, const PdfPage& page) {
   std::printf("     %s: (no non-empty blocks)\n", label);
 }
 
+void appendPagePreview(const PdfPage& page, std::string& preview, size_t limit) {
+  std::string linePreview = buildPageLinePreview(page);
+  if (linePreview.size() > limit) {
+    linePreview.resize(limit);
+  }
+  preview += linePreview;
+}
+
+std::string buildDocumentPreview(HalFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t pageCount,
+                                 size_t limit) {
+  std::string preview;
+  preview.reserve(limit);
+  for (uint32_t pageIndex = 0; pageIndex < pageCount && preview.size() < limit; ++pageIndex) {
+    PdfPage page;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    const uint32_t pageObjId = pageTree.getPageObjectId(pageIndex);
+    if (pageObjId == 0) {
+      break;
+    }
+    if (!xref.readDictForObject(file, pageObjId, pageBodyFixed)) {
+      break;
+    }
+    const std::string pageBody(pageBodyFixed.view());
+    if (!parseSinglePage(file, xref, pageBody, page)) {
+      break;
+    }
+
+    std::string pagePreview = buildPageLinePreview(page);
+    if (!pagePreview.empty()) {
+      if (!preview.empty() && preview.back() != '\n') {
+        preview.push_back('\n');
+      }
+      const size_t remaining = limit - preview.size();
+      if (pagePreview.size() > remaining) {
+        preview.append(pagePreview.data(), remaining);
+      } else {
+        preview += pagePreview;
+      }
+    }
+    if (pageIndex + 1 < pageCount && preview.size() < limit) {
+      preview.push_back('\n');
+    }
+  }
+  return preview;
+}
+
+void testPreviewMatchesPdftotext() {
+  struct Case {
+    const char* path;
+    const char* expectedPrefix;
+  };
+  const Case cases[] = {
+      {"test/pdf/sample.pdf",
+       "Sample PDF\nThis is a simple PDF file. Fun fun fun.\nLorem ipsum dolor sit amet, consectetuer adipiscing elit. "
+       "Phasellus facilisis odio sed mi.\nCurabitur suscipit. Nullam vel nisi. Etiam semper ipsum ut lectus. Proin "
+       "aliquam, erat eget\npharetra commodo, eros"},
+      {"test/pdf/EE-366.pdf",
+       "Engineer-to-Engineer Note\n\nEE-366\nTechnical notes on using Analog Devices DSPs, processors and development "
+       "tools\nVisit our Web resources http://www.analog.com/ee-notes and http://www.analog.com/processors or\n"
+       "e-mail processor.support@analog.com or processo"},
+  };
+
+  for (const auto& c : cases) {
+    HalFile file;
+    REQUIRE(file.loadPath(c.path));
+
+    XrefTable xref;
+    REQUIRE(xref.parse(file));
+
+    PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
+    REQUIRE(xref.readDictForObject(file, xref.rootObjId(), catalogBodyFixed));
+    const std::string catalogBody(catalogBodyFixed.view());
+
+    const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
+    REQUIRE(pagesObjId != 0);
+
+    PageTree pageTree;
+    REQUIRE(pageTree.parse(file, xref, pagesObjId));
+
+    const std::string preview = buildDocumentPreview(file, xref, pageTree, pageTree.pageCount(), 256);
+    REQUIRE(preview.rfind(c.expectedPrefix, 0) == 0);
+  }
+}
+
 bool runOnePdf(const char* path) {
   HalFile file;
   REQF(file.loadPath(path));
@@ -387,13 +533,21 @@ bool runOnePdf(const char* path) {
   }
 
   PdfPage page0;
-  {
-    const uint32_t pageObjId = pageTree.getPageObjectId(0);
-    REQF(pageObjId != 0);
+  auto loadPage = [&](uint32_t pageIndex, PdfPage& outPage) -> bool {
+    const uint32_t pageObjId = pageTree.getPageObjectId(pageIndex);
+    if (pageObjId == 0) {
+      return false;
+    }
     PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
-    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
-    std::string pageBody(pageBodyFixed.view());
-    REQF(parseSinglePage(file, xref, pageBody, page0));
+    if (!xref.readDictForObject(file, pageObjId, pageBodyFixed)) {
+      return false;
+    }
+    const std::string pageBody(pageBodyFixed.view());
+    return parseSinglePage(file, xref, pageBody, outPage);
+  };
+
+  {
+    REQF(loadPage(0, page0));
   }
   const bool dumpText = std::getenv("PDF_TEST_DUMP_TEXT") != nullptr;
   if (dumpText) {
@@ -425,12 +579,7 @@ bool runOnePdf(const char* path) {
 
   if (pageCount > 1) {
     PdfPage page1;
-    const uint32_t pageObjId = pageTree.getPageObjectId(1);
-    REQF(pageObjId != 0);
-    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
-    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
-    std::string pageBody(pageBodyFixed.view());
-    REQF(parseSinglePage(file, xref, pageBody, page1));
+    REQF(loadPage(1, page1));
     if (dumpText) {
       dumpPageText(1, page1);
     }
@@ -442,17 +591,26 @@ bool runOnePdf(const char* path) {
   }
   if (dumpText && pageCount > 2) {
     PdfPage page2;
-    const uint32_t pageObjId = pageTree.getPageObjectId(2);
-    REQF(pageObjId != 0);
-    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
-    REQF(xref.readDictForObject(file, pageObjId, pageBodyFixed));
-    std::string pageBody(pageBodyFixed.view());
-    REQF(parseSinglePage(file, xref, pageBody, page2));
+    REQF(loadPage(2, page2));
     dumpPageText(2, page2);
   }
 
   std::printf("OK  %s  pages=%u  outline=%zu  page0_blocks=%zu  page0_chars~%zu\n", base,
               static_cast<unsigned>(pageCount), outline.size(), page0.textBlocks.size(), totalTextChars(page0));
+  std::string documentPreview;
+  constexpr size_t kDocumentPreviewChars = 256;
+  appendPagePreview(page0, documentPreview, kDocumentPreviewChars);
+  if (pageCount > 1 && documentPreview.size() < kDocumentPreviewChars) {
+    PdfPage page1;
+    REQF(loadPage(1, page1));
+    appendPagePreview(page1, documentPreview, kDocumentPreviewChars);
+  }
+  for (uint32_t pageIndex = 2; pageIndex < pageCount && documentPreview.size() < kDocumentPreviewChars; ++pageIndex) {
+    PdfPage page;
+    REQF(loadPage(pageIndex, page));
+    appendPagePreview(page, documentPreview, kDocumentPreviewChars);
+  }
+  std::printf("     document preview (first %zu chars): %s\n", kDocumentPreviewChars, documentPreview.c_str());
   printFirstTextBlockPreview("page0 first block", page0);
   return true;
 }
@@ -463,6 +621,7 @@ int main(int argc, char** argv) {
   testPdfPageNavigationPolicy();
   testPdfCachedPageReader();
   testInflateReaderLongWindowStreaming();
+  testPreviewMatchesPdftotext();
   std::vector<const char*> paths;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) paths.push_back(argv[i]);

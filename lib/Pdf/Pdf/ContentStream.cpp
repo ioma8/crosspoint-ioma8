@@ -29,6 +29,24 @@ static constexpr uint16_t kWin1252ToU[128] = {
     0x00E7, 0x00E8, 0x00E9, 0x00EA, 0x00EB, 0x00EC, 0x00ED, 0x00EE, 0x00EF, 0x00F0, 0x00F1, 0x00F2, 0x00F3, 0x00F4,
     0x00F5, 0x00F6, 0x00F7, 0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF};
 
+// MacRomanEncoding bytes 0x80–0xFF → Unicode.
+static constexpr uint16_t kMacRomanToU[128] = {
+    0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7,
+    0x00E9, 0x00E8, 0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5,
+    0x00FA, 0x00F9, 0x00FB, 0x00FC, 0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9,
+    0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8, 0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211,
+    0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8, 0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248,
+    0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153, 0x2013, 0x2014, 0x201C, 0x201D,
+    0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02, 0x2021, 0x00B7,
+    0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+    0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD,
+    0x02DB, 0x02C7};
+
+enum class SimpleFontEncoding {
+  WinAnsi,
+  MacRoman,
+};
+
 void appendUtf8(std::string& out, uint32_t cp) {
   if (cp < 0x80) {
     out.push_back(static_cast<char>(cp));
@@ -42,7 +60,7 @@ void appendUtf8(std::string& out, uint32_t cp) {
   }
 }
 
-std::string pdfBytesToUtf8(const uint8_t* data, size_t len) {
+std::string pdfBytesToUtf8(const uint8_t* data, size_t len, SimpleFontEncoding encoding = SimpleFontEncoding::WinAnsi) {
   std::string out;
   if (len >= 2 && data[0] == 0xFE && data[1] == 0xFF) {
     for (size_t i = 2; i + 1 < len; i += 2) {
@@ -79,7 +97,8 @@ std::string pdfBytesToUtf8(const uint8_t* data, size_t len) {
     if (b < 0x80) {
       out.push_back(static_cast<char>(b));
     } else {
-      appendUtf8(out, kWin1252ToU[b - 0x80]);
+      const uint16_t cp = encoding == SimpleFontEncoding::MacRoman ? kMacRomanToU[b - 0x80] : kWin1252ToU[b - 0x80];
+      appendUtf8(out, cp);
     }
   }
   return out;
@@ -261,9 +280,10 @@ static bool parseToUnicodeCMap(const std::string& cmap, CidToUtf8Map& out) {
   return parseToUnicodeCMap(cmap, out);
 }
 
-static std::string bytesToUtf8WithCidMap(const uint8_t* data, size_t len, const CidToUtf8Map* map) {
+static std::string bytesToUtf8WithCidMap(const uint8_t* data, size_t len, const CidToUtf8Map* map,
+                                         SimpleFontEncoding encoding) {
   if (!map || map->empty() || len < 2 || (len % 2) != 0) {
-    return pdfBytesToUtf8(data, len);
+    return pdfBytesToUtf8(data, len, encoding);
   }
   std::string out;
   out.reserve(len);
@@ -627,10 +647,12 @@ uint8_t fontStyleFromDict(std::string_view fontDictBody);
                                                           const std::string& fontDictBody, const std::string& fontName,
                                                           uint8_t& currentFontStyle,
                                                           std::unordered_map<uint32_t, CidToUtf8Map>& fontCidMaps,
-                                                          const CidToUtf8Map*& currentCidMap) {
+                                                          const CidToUtf8Map*& currentCidMap,
+                                                          SimpleFontEncoding& currentSimpleEncoding) {
   const uint32_t fid = fontObjectIdForName(fontDictBody, fontName);
   currentCidMap = nullptr;
   currentFontStyle = PdfTextStyleRegular;
+  currentSimpleEncoding = SimpleFontEncoding::WinAnsi;
   if (fid == 0) {
     return;
   }
@@ -642,6 +664,9 @@ uint8_t fontStyleFromDict(std::string_view fontDictBody);
 
   const std::string_view fbodyView = fbody.view();
   currentFontStyle = fontStyleFromDict(fbodyView);
+  if (fbodyView.find("/MacRomanEncoding") != std::string_view::npos) {
+    currentSimpleEncoding = SimpleFontEncoding::MacRoman;
+  }
   const bool isWinAnsi = fbodyView.find("/WinAnsiEncoding") != std::string_view::npos ||
                          fbodyView.find("/MacRomanEncoding") != std::string_view::npos;
   const bool isIdentity = fbodyView.find("/Identity-H") != std::string_view::npos ||
@@ -731,12 +756,38 @@ bool fillImageDescriptor(FsFile& file, const XrefTable& xref, uint32_t objId, Pd
 }
 
 struct TmpRun {
+  float x = 0;
   float y = 0;
   std::string utf8;
   uint8_t style = PdfTextStyleRegular;
   uint16_t fontSize = 0;
   uint32_t seq = 0;
 };
+
+struct PdfMatrix {
+  float a = 1.0f;
+  float b = 0.0f;
+  float c = 0.0f;
+  float d = 1.0f;
+  float e = 0.0f;
+  float f = 0.0f;
+};
+
+static PdfMatrix multiplyMatrix(const PdfMatrix& lhs, const PdfMatrix& rhs) {
+  PdfMatrix out;
+  out.a = lhs.a * rhs.a + lhs.c * rhs.b;
+  out.b = lhs.b * rhs.a + lhs.d * rhs.b;
+  out.c = lhs.a * rhs.c + lhs.c * rhs.d;
+  out.d = lhs.b * rhs.c + lhs.d * rhs.d;
+  out.e = lhs.a * rhs.e + lhs.c * rhs.f + lhs.e;
+  out.f = lhs.b * rhs.e + lhs.d * rhs.f + lhs.f;
+  return out;
+}
+
+static void transformPoint(const PdfMatrix& m, float x, float y, float& outX, float& outY) {
+  outX = m.a * x + m.c * y + m.e;
+  outY = m.b * x + m.d * y + m.f;
+}
 
 // UTF-8 code unit length starting at s[i] (1–4), or 1 if invalid/truncated.
 static size_t utf8CodepointByteLen(const std::string& s, size_t i) {
@@ -834,6 +885,29 @@ static void stripPdfExtractedNoiseUtf8(std::string& s) {
   s = std::move(out);
 }
 
+static void appendDecomposedLigature(std::string& out, uint32_t cp) {
+  switch (cp) {
+    case 0xFB00:
+      out += "ff";
+      return;
+    case 0xFB01:
+      out += "fi";
+      return;
+    case 0xFB02:
+      out += "fl";
+      return;
+    case 0xFB03:
+      out += "ffi";
+      return;
+    case 0xFB04:
+      out += "ffl";
+      return;
+    default:
+      appendUtf8(out, cp);
+      return;
+  }
+}
+
 // Collapse ASCII + common PDF Unicode spaces to a single ASCII space; copy other UTF-8 as-is.
 static void normalizePdfText(std::string& s) {
   std::string out;
@@ -856,25 +930,51 @@ static void normalizePdfText(std::string& s) {
       out.push_back(' ');
     }
     pendingSpace = false;
-    const size_t n = utf8CodepointByteLen(s, i);
-    for (size_t j = 0; j < n && i + j < s.size(); ++j) {
+    uint32_t cp = 0;
+    const size_t n = utf8DecodeAt(s, i, &cp);
+    if (n > 0) {
+      appendDecomposedLigature(out, cp);
+      i += n;
+      continue;
+    }
+    const size_t fallback = utf8CodepointByteLen(s, i);
+    for (size_t j = 0; j < fallback && i + j < s.size(); ++j) {
       out.push_back(s[i + j]);
     }
-    i += n;
+    i += fallback;
   }
   s = std::move(out);
   stripPdfExtractedNoiseUtf8(s);
 }
 
-void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCounter) {
+static float estimateTextAdvance(const std::string& utf8, uint16_t fontSize) {
+  size_t glyphs = 0;
+  for (size_t i = 0; i < utf8.size();) {
+    const size_t n = utf8CodepointByteLen(utf8, i);
+    i += n == 0 ? 1 : n;
+    ++glyphs;
+  }
+  return static_cast<float>(glyphs) * static_cast<float>(fontSize == 0 ? 10 : fontSize) * 0.60f;
+}
+
+struct BlockPlacementState {
+  bool havePrev = false;
+  float prevY = 0.0f;
+  float prevEndX = 0.0f;
+  uint32_t prevHint = 0;
+  uint16_t prevFontSize = 0;
+};
+
+void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCounter, BlockPlacementState& placement) {
   if (runs.empty()) return;
   std::sort(runs.begin(), runs.end(), [](const TmpRun& a, const TmpRun& b) {
-    if (a.y != b.y) return a.y > b.y;
+    if (std::fabs(a.y - b.y) >= 0.5f) return a.y > b.y;
+    if (std::fabs(a.x - b.x) >= 0.5f) return a.x < b.x;
     return a.seq < b.seq;
   });
-  constexpr float kLineThresh = 20.0f;
+  constexpr float kLineThresh = 4.0f;
 
-  auto pushBlock = [&](std::string& block, uint32_t hint, uint16_t maxFontSize, uint8_t styleBits) {
+  auto pushBlock = [&](std::string& block, float y, float startX, float endX, uint16_t maxFontSize, uint8_t styleBits) {
     normalizePdfText(block);
     if (block.empty()) {
       return;
@@ -891,31 +991,52 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
       return;
     }
     tb.style = styleBits;
+    uint32_t hint = static_cast<uint32_t>(std::lround(y * 100.0f));
+    if (placement.havePrev && std::fabs(y - placement.prevY) < kLineThresh) {
+      const float splitGap =
+          std::max(60.0f, static_cast<float>(std::max<uint16_t>(placement.prevFontSize, maxFontSize)) * 2.5f);
+      const bool allowSyntheticSplit = std::max<uint16_t>(placement.prevFontSize, maxFontSize) >= 18;
+      if (allowSyntheticSplit && (startX - placement.prevEndX) > splitGap) {
+        hint = placement.prevHint + 20u;
+      } else {
+        hint = placement.prevHint;
+      }
+    }
     tb.orderHint = hint;
     page.textBlocks.push_back(std::move(tb));
     page.drawOrder.push_back({false, static_cast<uint32_t>(page.textBlocks.size() - 1)});
     ++blockCounter;
+    placement.havePrev = true;
+    placement.prevY = y;
+    placement.prevEndX = endX;
+    placement.prevHint = hint;
+    placement.prevFontSize = maxFontSize;
   };
 
   std::string block = runs[0].utf8;
-  uint32_t hint = static_cast<uint32_t>(runs[0].y);
+  float lineY = runs[0].y;
+  float lineStartX = runs[0].x;
   uint16_t maxFontSize = runs[0].fontSize;
   uint8_t styleBits = runs[0].style;
+  float blockEndX = runs[0].x + estimateTextAdvance(runs[0].utf8, runs[0].fontSize);
   for (size_t i = 1; i < runs.size(); ++i) {
     if (std::fabs(runs[i].y - runs[i - 1].y) < kLineThresh) {
       // TJ fragments are concatenated without an extra separator; spacing is inside the strings.
       block += runs[i].utf8;
       styleBits = static_cast<uint8_t>(styleBits | runs[i].style);
       maxFontSize = std::max(maxFontSize, runs[i].fontSize);
+      blockEndX = std::max(blockEndX, runs[i].x + estimateTextAdvance(runs[i].utf8, runs[i].fontSize));
     } else {
-      pushBlock(block, hint, maxFontSize, styleBits);
+      pushBlock(block, lineY, lineStartX, blockEndX, maxFontSize, styleBits);
       block = runs[i].utf8;
-      hint = static_cast<uint32_t>(runs[i].y);
+      lineY = runs[i].y;
+      lineStartX = runs[i].x;
       maxFontSize = runs[i].fontSize;
       styleBits = runs[i].style;
+      blockEndX = runs[i].x + estimateTextAdvance(runs[i].utf8, runs[i].fontSize);
     }
   }
-  pushBlock(block, hint, maxFontSize, styleBits);
+  pushBlock(block, lineY, lineStartX, blockEndX, maxFontSize, styleBits);
   runs.clear();
 }
 
@@ -926,8 +1047,10 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   const std::string fontDictBody = resolveFontDict(file, xref, pageObjectBody);
   std::unordered_map<uint32_t, CidToUtf8Map> fontCidMaps;
   const CidToUtf8Map* currentCidMap = nullptr;
+  SimpleFontEncoding currentSimpleFontEncoding = SimpleFontEncoding::WinAnsi;
+  PdfMatrix currentCtm;
+  std::vector<PdfMatrix> ctmStack;
 
-  bool inText = false;
   float textX = 0;
   float textY = 0;
   float lineSpacing = 0;
@@ -937,6 +1060,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   uint32_t seqCounter = 0;
   std::vector<TmpRun> runs;
   std::vector<std::string> stack;
+  BlockPlacementState placement;
 
   while (p < end) {
     skipWsComment(p, end);
@@ -987,17 +1111,11 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
 
     if (op == "BT") {
       stack.clear();
-      inText = true;
       runs.clear();
       textX = textY = 0;
       lineSpacing = 0;
-      currentFontStyle = PdfTextStyleRegular;
-      currentFontSize = 0;
     } else if (op == "ET") {
-      if (inText) {
-        flushTextGroup(runs, outPage, textBlockCounter);
-      }
-      inText = false;
+      flushTextGroup(runs, outPage, textBlockCounter, placement);
     } else if (op == "Tm" && stack.size() >= 6) {
       const float f = toFloat(stack.back());
       stack.pop_back();
@@ -1009,6 +1127,30 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       stack.pop_back();
       textX = e;
       textY = f;
+    } else if (op == "cm" && stack.size() >= 6) {
+      PdfMatrix m;
+      m.f = toFloat(stack.back());
+      stack.pop_back();
+      m.e = toFloat(stack.back());
+      stack.pop_back();
+      m.d = toFloat(stack.back());
+      stack.pop_back();
+      m.c = toFloat(stack.back());
+      stack.pop_back();
+      m.b = toFloat(stack.back());
+      stack.pop_back();
+      m.a = toFloat(stack.back());
+      stack.pop_back();
+      currentCtm = multiplyMatrix(currentCtm, m);
+    } else if (op == "q") {
+      ctmStack.push_back(currentCtm);
+    } else if (op == "Q") {
+      if (!ctmStack.empty()) {
+        currentCtm = ctmStack.back();
+        ctmStack.pop_back();
+      } else {
+        currentCtm = PdfMatrix{};
+      }
     } else if (op == "Td" && stack.size() >= 2) {
       const float dy = toFloat(stack.back());
       stack.pop_back();
@@ -1030,11 +1172,12 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       const std::string raw = stack.back();
       stack.pop_back();
       TmpRun r;
-      r.y = textY;
+      transformPoint(currentCtm, textX, textY, r.x, r.y);
       r.style = currentFontStyle;
       r.fontSize = currentFontSize;
       r.seq = seqCounter++;
-      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap);
+      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
+                                     currentSimpleFontEncoding);
       if (!r.utf8.empty()) runs.push_back(std::move(r));
     } else if (op == "TJ" && !stack.empty()) {
       std::string arr = stack.back();
@@ -1050,21 +1193,23 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
           std::string raw;
           if (!readPdfStringLiteral(q, qend, raw)) break;
           TmpRun r;
-          r.y = textY;
+          transformPoint(currentCtm, textX, textY, r.x, r.y);
           r.style = currentFontStyle;
           r.fontSize = currentFontSize;
           r.seq = seqCounter++;
-          r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap);
+          r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
+                                         currentSimpleFontEncoding);
           if (!r.utf8.empty()) runs.push_back(std::move(r));
         } else if (*q == '<' && q + 1 < qend && q[1] != '<') {
           std::string raw;
           if (!readHexString(q, qend, raw)) break;
           TmpRun r;
-          r.y = textY;
+          transformPoint(currentCtm, textX, textY, r.x, r.y);
           r.style = currentFontStyle;
           r.fontSize = currentFontSize;
           r.seq = seqCounter++;
-          r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap);
+          r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
+                                         currentSimpleFontEncoding);
           if (!r.utf8.empty()) runs.push_back(std::move(r));
         } else if ((*q >= '0' && *q <= '9') || *q == '-' || *q == '+' || *q == '.') {
           std::string num;
@@ -1078,18 +1223,20 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       const std::string raw = stack.back();
       stack.pop_back();
       TmpRun r;
-      r.y = textY;
+      transformPoint(currentCtm, textX, textY, r.x, r.y);
       r.style = currentFontStyle;
       r.fontSize = currentFontSize;
       r.seq = seqCounter++;
-      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap);
+      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
+                                     currentSimpleFontEncoding);
       if (!r.utf8.empty()) runs.push_back(std::move(r));
     } else if (op == "Tf" && stack.size() >= 2) {
       currentFontSize = static_cast<uint16_t>(std::max(0.0f, toFloat(stack.back())));
       stack.pop_back();
       const std::string fontName = stack.back();
       stack.pop_back();
-      updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontCidMaps, currentCidMap);
+      updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontCidMaps, currentCidMap,
+                                 currentSimpleFontEncoding);
     } else if (op == "Do" && !stack.empty()) {
       const std::string name = stack.back();
       stack.pop_back();
@@ -1114,7 +1261,6 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       }
     }
   }
-
   return true;
 }
 
