@@ -36,10 +36,6 @@ bool ReaderActivity::isBmpFile(const std::string& path) { return FsHelpers::hasB
 bool ReaderActivity::isPdfFile(const std::string& path) { return FsHelpers::hasPdfExtension(path); }
 
 std::unique_ptr<Pdf> ReaderActivity::loadPdf(const std::string& path) {
-  if (!Storage.exists(path.c_str())) {
-    LOG_ERR("READER", "File does not exist: %s", path.c_str());
-    return nullptr;
-  }
   auto pdf = std::make_unique<Pdf>();
   if (!pdf->open(path.c_str())) {
     LOG_ERR("READER", "Failed to load PDF");

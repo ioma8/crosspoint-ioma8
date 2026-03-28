@@ -420,6 +420,22 @@ void testPdfCachedPageReader() {
   REQUIRE(loadedStep.index == 0);
 }
 
+void testPdfCachedPageReaderCloseIsIdempotent() {
+  PdfCachedPageReader reader;
+  reader.close();
+  reader.close();
+}
+
+void testPdfCachedPageReaderRemainsReusableAfterFailedOpen() {
+  PdfCachedPageReader reader;
+  REQUIRE(!reader.open("test/pdf/build/pdf-cache-reader-test", 999));
+  reader.close();
+  reader.close();
+  REQUIRE(reader.open("test/pdf/build/pdf-cache-reader-test", 0));
+  REQUIRE(reader.textCount() == 1);
+  reader.close();
+}
+
 struct InflateStreamCtx {
   InflateReader reader;  // must be first for callback context cast
   const uint8_t* compressed = nullptr;
@@ -769,6 +785,8 @@ int main(int argc, char** argv) {
   testPageTreeInvalidObjectIdIsNotPageZero();
   testOutlineResolutionVariants();
   testPdfCachedPageReader();
+  testPdfCachedPageReaderCloseIsIdempotent();
+  testPdfCachedPageReaderRemainsReusableAfterFailedOpen();
   testInflateReaderLongWindowStreaming();
   testPreviewMatchesPdftotext();
   std::vector<const char*> paths;

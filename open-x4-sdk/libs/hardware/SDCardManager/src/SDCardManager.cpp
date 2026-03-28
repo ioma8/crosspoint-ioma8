@@ -251,11 +251,6 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
 }
 
 bool SDCardManager::openFileForRead(const char* moduleName, const char* path, FsFile& file) {
-  if (!sd.exists(path)) {
-    logSdModulePath(moduleName, "File does not exist: ", path);
-    return false;
-  }
-
   file = sd.open(path, O_RDONLY);
   if (!file) {
     logSdModulePath(moduleName, "Failed to open file for reading: ", path);

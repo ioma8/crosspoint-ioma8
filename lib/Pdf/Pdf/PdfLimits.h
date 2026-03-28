@@ -125,7 +125,7 @@
 #endif
 
 #ifndef PDF_MAX_TMP_RUNS
-#define PDF_MAX_TMP_RUNS 8
+#define PDF_MAX_TMP_RUNS 256
 #endif
 
 #ifndef PDF_MAX_TMP_RUN_UTF8

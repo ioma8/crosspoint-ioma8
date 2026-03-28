@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr uint8_t kMetaVersion = 3;
+constexpr uint8_t kMetaVersion = 4;
 constexpr size_t kFileHashChunkSize = 64;
 constexpr uint8_t kPageVersionV1 = 1;
 constexpr uint8_t kPageVersionV2 = 2;

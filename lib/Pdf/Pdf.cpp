@@ -87,13 +87,15 @@ Pdf::Pdf(Pdf&& o) noexcept = default;
 Pdf& Pdf::operator=(Pdf&& o) noexcept = default;
 
 void Pdf::close() {
-  if (valid_) {
+  if (file_.isOpen()) {
     file_.close();
   }
+  file_ = FsFile();
   valid_ = false;
   xrefReady_ = false;
   outlinesFromCache_ = false;
   pageMapFromCache_ = false;
+  metaSaved_ = false;
   pages_ = 0;
   outlineEntries_.clear();
   cachedPageObjectIds_.clear();
@@ -156,8 +158,7 @@ bool Pdf::parseFromSource(bool needsOutlines) {
   xrefReady_ = true;
   pageMapFromCache_ = false;
   outlinesFromCache_ = false;
-  cache_.saveMeta(pages_, outlineEntries_, &cachedPageObjectIds_, static_cast<uint32_t>(sourceSignature_.fileSize),
-                  sourceSignature_.headHash, sourceSignature_.tailHash);
+  metaSaved_ = false;
   return true;
 }
 
@@ -182,11 +183,6 @@ bool Pdf::open(const char* path) {
   }
   if (!path_.assign(path, std::strlen(path))) {
     pdfLogErr("Path too long");
-    return false;
-  }
-
-  if (!Storage.exists(path_.c_str())) {
-    pdfLogErrPath("File does not exist: ", path_.c_str());
     return false;
   }
 
@@ -216,6 +212,7 @@ bool Pdf::open(const char* path) {
     outlinesFromCache_ = true;
     pageMapFromCache_ = true;
     xrefReady_ = false;
+    metaSaved_ = true;
     valid_ = true;
     return true;
   }
@@ -287,6 +284,24 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
   }
 
   cache_.savePage(pageNum, out);
+  if (!metaSaved_) {
+    persistCacheMetaIfNeeded();
+  }
+  return true;
+}
+
+bool Pdf::persistCacheMetaIfNeeded() {
+  if (metaSaved_) {
+    return true;
+  }
+  if (!valid_) {
+    return false;
+  }
+  if (!cache_.saveMeta(pages_, outlineEntries_, &cachedPageObjectIds_, static_cast<uint32_t>(sourceSignature_.fileSize),
+                       sourceSignature_.headHash, sourceSignature_.tailHash)) {
+    return false;
+  }
+  metaSaved_ = true;
   return true;
 }
 

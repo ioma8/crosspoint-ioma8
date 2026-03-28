@@ -15,7 +15,9 @@ constexpr uint8_t kPageVersionV5 = 5;
 }  // namespace
 
 void PdfCachedPageReader::close() {
-  file_.close();
+  if (file_.isOpen()) {
+    file_.close();
+  }
   textOffsets_.clear();
   imageOffsets_.clear();
   drawSteps_.clear();

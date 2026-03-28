@@ -59,11 +59,11 @@ bool PdfReaderActivity::loadPage(uint32_t page) {
   }
   pageReader.close();
   if (!pageReader.open(pdf->cacheDirectory().c_str(), page)) {
-    PdfPage tempPage;
-    if (!pdf->getPage(page, tempPage)) {
+    scratchPage_.clear();
+    if (!pdf->getPage(page, scratchPage_)) {
       return false;
     }
-    tempPage.clear();
+    scratchPage_.clear();
     if (!pageReader.open(pdf->cacheDirectory().c_str(), page)) {
       return false;
     }

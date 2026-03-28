@@ -47,6 +47,7 @@ class Pdf {
   bool parseFromSource(bool needsOutlines);
   bool ensureXrefReady();
   bool computeSourceSignature(SourceSignature& outSignature);
+  bool persistCacheMetaIfNeeded();
 
   PdfFixedString<PDF_MAX_PATH> path_;
   FsFile file_;
@@ -63,4 +64,5 @@ class Pdf {
   bool xrefReady_ = false;
   bool outlinesFromCache_ = false;
   bool pageMapFromCache_ = false;
+  bool metaSaved_ = false;
 };

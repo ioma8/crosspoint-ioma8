@@ -255,6 +255,7 @@ bool PdfObject::readAt(FsFile& file, uint32_t offset, PdfFixedString<PDF_OBJECT_
   while (bodyStr.size() < kMaxAcc) {
     const size_t remaining = kMaxAcc - bodyStr.size() - 1;
     if (remaining == 0) {
+      pdfLogErrU32U32("PdfObject::readAt overflow offset/bodySize=", offset, static_cast<uint32_t>(bodyStr.size()));
       pdfLogErr("PdfObject::readAt object body overflow");
       return false;
     }
@@ -262,6 +263,7 @@ bool PdfObject::readAt(FsFile& file, uint32_t offset, PdfFixedString<PDF_OBJECT_
     const int n = file.read(chunk, toRead);
     if (n <= 0) break;
     if (!bodyStr.append(reinterpret_cast<const char*>(chunk), static_cast<size_t>(n))) {
+      pdfLogErrU32U32("PdfObject::readAt append overflow offset/bodySize=", offset, static_cast<uint32_t>(bodyStr.size()));
       pdfLogErr("PdfObject::readAt object body overflow");
       return false;
     }

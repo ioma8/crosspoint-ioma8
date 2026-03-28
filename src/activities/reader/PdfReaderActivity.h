@@ -21,6 +21,7 @@ class PdfReaderActivity final : public Activity {
   PdfCachedPageReader pageReader;
   PdfFixedVector<PdfRenderCursor, PDF_MAX_PAGE_SLICES> pageSliceStarts;
   PdfPageNavigationState navigationState;
+  PdfPage scratchPage_;
 
   int cachedFontId = 0;
   int viewportWidth = 0;

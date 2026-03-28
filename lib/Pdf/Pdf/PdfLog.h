@@ -23,9 +23,27 @@ inline void pdfLogErrPath(const char* message, const char* path) {
   logSerial.print(message);
   logSerial.println(path);
 }
+
+inline void pdfLogErrU32U32(const char* message, uint32_t a, uint32_t b) {
+  logSerial.print("[ERR] [PDF] ");
+  logSerial.print(message);
+  logSerial.print(a);
+  logSerial.print(' ');
+  logSerial.println(b);
+}
+
+inline void pdfLogDbgU32U32(const char* message, uint32_t a, uint32_t b) {
+  logSerial.print("[DBG] [PDF] ");
+  logSerial.print(message);
+  logSerial.print(a);
+  logSerial.print(' ');
+  logSerial.println(b);
+}
 #else
 inline void pdfLogErr(const char*) {}
 inline void pdfLogDbg(const char*) {}
 inline void pdfLogErrU32(const char*, uint32_t) {}
 inline void pdfLogErrPath(const char*, const char*) {}
+inline void pdfLogErrU32U32(const char*, uint32_t, uint32_t) {}
+inline void pdfLogDbgU32U32(const char*, uint32_t, uint32_t) {}
 #endif

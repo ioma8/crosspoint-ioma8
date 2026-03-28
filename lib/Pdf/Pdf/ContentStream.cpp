@@ -838,6 +838,31 @@ struct TmpRun {
   uint32_t seq = 0;
 };
 
+void logTmpRunPushDiagnostics(const TmpRun& run, const std::vector<TmpRun>& runs) {
+#if defined(ENABLE_SERIAL_LOG)
+  logSerial.print("[ERR] [PDF] TmpRun push size/cap/text/font/seq=");
+  logSerial.print(static_cast<uint32_t>(runs.size()));
+  logSerial.print(' ');
+  logSerial.print(static_cast<uint32_t>(runs.capacity()));
+  logSerial.print(' ');
+  logSerial.print(static_cast<uint32_t>(run.utf8.size()));
+  logSerial.print(' ');
+  logSerial.print(static_cast<uint32_t>(run.fontSize));
+  logSerial.print(' ');
+  logSerial.println(run.seq);
+
+  logSerial.print("[ERR] [PDF] TmpRun push xy/endX=");
+  logSerial.print(run.x);
+  logSerial.print(' ');
+  logSerial.print(run.y);
+  logSerial.print(' ');
+  logSerial.println(run.endX);
+#else
+  (void)run;
+  (void)runs;
+#endif
+}
+
 struct PdfMatrix {
   float a = 1.0f;
   float b = 0.0f;
@@ -1040,6 +1065,28 @@ static float sameLineThreshold(uint16_t a, uint16_t b) {
   return std::max(4.0f, static_cast<float>(maxFont) * 0.45f);
 }
 
+bool tryMergeTmpRun(std::vector<TmpRun>& runs, const TmpRun& run) {
+  if (runs.empty()) {
+    return false;
+  }
+
+  TmpRun& last = runs.back();
+  if (std::fabs(run.y - last.y) >= sameLineThreshold(last.fontSize, run.fontSize)) {
+    return false;
+  }
+
+  const float gap = run.x - last.endX;
+  const float spaceGap = std::max(1.5f, static_cast<float>(std::max<uint16_t>(last.fontSize, run.fontSize)) * 0.18f);
+  if (gap > spaceGap && !last.utf8.empty() && last.utf8.back() != ' ') {
+    last.utf8.push_back(' ');
+  }
+  last.utf8 += run.utf8;
+  last.style = static_cast<uint8_t>(last.style | run.style);
+  last.fontSize = std::max(last.fontSize, run.fontSize);
+  last.endX = std::max(last.endX, run.endX);
+  return true;
+}
+
 struct BlockPlacementState {
   bool havePrev = false;
   float prevY = 0.0f;
@@ -1145,8 +1192,24 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   uint32_t textBlockCounter = 0;
   uint32_t seqCounter = 0;
   std::vector<TmpRun> runs;
+  runs.reserve(PDF_MAX_TMP_RUNS);
   std::vector<std::string> stack;
   BlockPlacementState placement;
+  auto emitRun = [&](TmpRun&& run) {
+    if (run.utf8.empty()) {
+      return;
+    }
+    if (tryMergeTmpRun(runs, run)) {
+      return;
+    }
+    if (runs.size() >= PDF_MAX_TMP_RUNS) {
+      flushTextGroup(runs, outPage, textBlockCounter, placement);
+    }
+    if (runs.size() == runs.capacity()) {
+      logTmpRunPushDiagnostics(run, runs);
+    }
+    runs.push_back(std::move(run));
+  };
 
   while (p < end) {
     skipWsComment(p, end);
@@ -1266,7 +1329,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
                                      currentSimpleFontEncoding);
       r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
       textX += estimateTextAdvance(r.utf8, r.fontSize);
-      if (!r.utf8.empty()) runs.push_back(std::move(r));
+      emitRun(std::move(r));
     } else if (op == "TJ" && !stack.empty()) {
       std::string arr = stack.back();
       stack.pop_back();
@@ -1289,7 +1352,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
                                          currentSimpleFontEncoding);
           r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
           textX += estimateTextAdvance(r.utf8, r.fontSize);
-          if (!r.utf8.empty()) runs.push_back(std::move(r));
+          emitRun(std::move(r));
         } else if (*q == '<' && q + 1 < qend && q[1] != '<') {
           std::string raw;
           if (!readHexString(q, qend, raw)) break;
@@ -1302,7 +1365,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
                                          currentSimpleFontEncoding);
           r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
           textX += estimateTextAdvance(r.utf8, r.fontSize);
-          if (!r.utf8.empty()) runs.push_back(std::move(r));
+          emitRun(std::move(r));
         } else if ((*q >= '0' && *q <= '9') || *q == '-' || *q == '+' || *q == '.') {
           std::string num;
           readNumber(q, qend, num);
@@ -1324,7 +1387,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
                                      currentSimpleFontEncoding);
       r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
       textX += estimateTextAdvance(r.utf8, r.fontSize);
-      if (!r.utf8.empty()) runs.push_back(std::move(r));
+      emitRun(std::move(r));
     } else if (op == "Tf" && stack.size() >= 2) {
       currentFontSize = static_cast<uint16_t>(std::max(0.0f, toFloat(stack.back())));
       stack.pop_back();

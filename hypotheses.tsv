@@ -1,3 +1,10 @@
-Pdf.cpp still lacks the new cache/signature implementation, so the build is inconsistent and the cache shortcut cannot run	proven
-PdfCache meta serialization changed but readers/writers are still out of sync on the on-disk format	not relevant
-PageTree can rebuild page IDs from cache, but the cached page map is not yet wired into Pdf::open()	proven
+PdfReaderActivity::loadPage overflows the ActivityManager stack because it allocates a full PdfPage scratch object on the stack for cache warm-up	proven
+Moving the PdfPage scratch object off the stack eliminates the startup crash	proven
+PdfCachedPageReader::close() must tolerate failed or missing opens because HalStorage still leaves a HalFile wrapper object after open failures	proven
+Guarding PdfCachedPageReader::close() with file_.isOpen() prevents the HalFile::close assert after failed cache-page opens	proven
+The direct host pdf_parser_host_test binary was stale, so earlier preview dumps did not reflect the current parser implementation	proven
+The committed baseline ContentStream.cpp parser path passes the full host PDF parser suite, including esp32-c6_datasheet_en.pdf	proven
+The local experimental ContentStream changes caused the esp32-c6 spacing regressions; the cache and stack fixes were not the source of that parser breakage	proven
+Increasing PDF_MAX_TMP_RUNS only masked the experimental parser regression and is not needed on the passing parser baseline	proven
+Deferring PDF cache metadata writes until after the first successful page parse reduces startup-path SD work while preserving cache behavior	needs further investigation
+Removing redundant existence checks before SD open calls reduces repeated SdFat path work and keeps the startup path simpler	needs further investigation
