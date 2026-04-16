@@ -9,12 +9,13 @@
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <HalStorage.h>
 #include <I18n.h>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
+#include "PageProgressStore.h"
+#include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
 #include "components/UITheme.h"
@@ -22,7 +23,6 @@
 
 namespace {
 constexpr unsigned long skipPageMs = 700;
-constexpr unsigned long goHomeMs = 1000;
 }  // namespace
 
 void XtcReaderActivity::onEnter() {
@@ -49,8 +49,7 @@ void XtcReaderActivity::onEnter() {
 void XtcReaderActivity::onExit() {
   Activity::onExit();
 
-  APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  ReaderUtils::resetReaderSession();
   xtc.reset();
 }
 
@@ -69,32 +68,20 @@ void XtcReaderActivity::loop() {
   }
 
   // Long press BACK (1s+) goes to file selection
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= goHomeMs) {
+  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
     activityManager.goToFileBrowser(xtc ? xtc->getPath() : "");
     return;
   }
 
   // Short press BACK goes directly to home
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && mappedInput.getHeldTime() < goHomeMs) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
+      mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
     onGoHome();
     return;
   }
 
-  // When long-press chapter skip is disabled, turn pages on press instead of release.
-  const bool usePressForPageTurn = !SETTINGS.longPressChapterSkip;
-  const bool prevTriggered = usePressForPageTurn ? (mappedInput.wasPressed(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasPressed(MappedInputManager::Button::Left))
-                                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
-                                                    mappedInput.wasReleased(MappedInputManager::Button::Left));
-  const bool powerPageTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
-                             mappedInput.wasReleased(MappedInputManager::Button::Power);
-  const bool nextTriggered = usePressForPageTurn
-                                 ? (mappedInput.wasPressed(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasPressed(MappedInputManager::Button::Right))
-                                 : (mappedInput.wasReleased(MappedInputManager::Button::PageForward) || powerPageTurn ||
-                                    mappedInput.wasReleased(MappedInputManager::Button::Right));
-
-  if (!prevTriggered && !nextTriggered) {
+  const ReaderUtils::PageTurnResult pageTurn = ReaderUtils::detectPageTurn(mappedInput);
+  if (!pageTurn.prev && !pageTurn.next) {
     return;
   }
 
@@ -108,14 +95,14 @@ void XtcReaderActivity::loop() {
   const bool skipPages = SETTINGS.longPressChapterSkip && mappedInput.getHeldTime() > skipPageMs;
   const int skipAmount = skipPages ? 10 : 1;
 
-  if (prevTriggered) {
+  if (pageTurn.prev) {
     if (currentPage >= static_cast<uint32_t>(skipAmount)) {
       currentPage -= skipAmount;
     } else {
       currentPage = 0;
     }
     requestUpdate();
-  } else if (nextTriggered) {
+  } else if (pageTurn.next) {
     currentPage += skipAmount;
     if (currentPage >= xtc->getPageCount()) {
       currentPage = xtc->getPageCount();  // Allow showing "End of book"
@@ -322,32 +309,17 @@ void XtcReaderActivity::renderPage() {
   LOG_DBG("XTR", "Rendered page %lu/%lu (%u-bit)", currentPage + 1, xtc->getPageCount(), bitDepth);
 }
 
-void XtcReaderActivity::saveProgress() const {
-  FsFile f;
-  if (Storage.openFileForWrite("XTR", xtc->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[4];
-    data[0] = currentPage & 0xFF;
-    data[1] = (currentPage >> 8) & 0xFF;
-    data[2] = (currentPage >> 16) & 0xFF;
-    data[3] = (currentPage >> 24) & 0xFF;
-    f.write(data, 4);
-    f.close();
-  }
-}
+void XtcReaderActivity::saveProgress() const { PageProgressStore::save("XTR", xtc->getCachePath(), currentPage); }
 
 void XtcReaderActivity::loadProgress() {
-  FsFile f;
-  if (Storage.openFileForRead("XTR", xtc->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[4];
-    if (f.read(data, 4) == 4) {
-      currentPage = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
-      LOG_DBG("XTR", "Loaded progress: page %lu", currentPage);
+  uint32_t savedPage = 0;
+  if (PageProgressStore::load("XTR", xtc->getCachePath(), savedPage)) {
+    currentPage = savedPage;
+    LOG_DBG("XTR", "Loaded progress: page %lu", currentPage);
 
-      // Validate page number
-      if (currentPage >= xtc->getPageCount()) {
-        currentPage = 0;
-      }
+    // Validate page number
+    if (currentPage >= xtc->getPageCount()) {
+      currentPage = 0;
     }
-    f.close();
   }
 }

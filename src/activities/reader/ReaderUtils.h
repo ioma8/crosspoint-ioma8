@@ -1,6 +1,7 @@
 #pragma once
 
 #include <CrossPointSettings.h>
+#include <CrossPointState.h>
 #include <GfxRenderer.h>
 #include <Logging.h>
 
@@ -27,6 +28,14 @@ inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
     default:
       break;
   }
+}
+
+inline void resetReaderSession(GfxRenderer* renderer = nullptr) {
+  if (renderer) {
+    renderer->setOrientation(GfxRenderer::Orientation::Portrait);
+  }
+  APP_STATE.readerActivityLoadCount = 0;
+  APP_STATE.saveToFile();
 }
 
 struct PageTurnResult {

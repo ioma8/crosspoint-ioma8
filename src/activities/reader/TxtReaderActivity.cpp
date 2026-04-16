@@ -2,7 +2,6 @@
 
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
-#include <HalStorage.h>
 #include <I18n.h>
 #include <Serialization.h>
 #include <Utf8.h>
@@ -10,6 +9,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
+#include "PageProgressStore.h"
 #include "ReaderBookmarkIndicator.h"
 #include "ReaderBookmarkSelectionActivity.h"
 #include "ReaderBookmarkStore.h"
@@ -51,14 +51,10 @@ void TxtReaderActivity::onEnter() {
 void TxtReaderActivity::onExit() {
   Activity::onExit();
 
-  // Reset orientation back to portrait for the rest of the UI
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-
   pageOffsets.clear();
   currentPageLines.clear();
   bookmarks.clear();
-  APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  ReaderUtils::resetReaderSession(&renderer);
   txt.reset();
 }
 
@@ -494,33 +490,20 @@ void TxtReaderActivity::renderStatusBar() const {
 }
 
 void TxtReaderActivity::saveProgress() const {
-  FsFile f;
-  if (Storage.openFileForWrite("TRS", txt->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[4];
-    data[0] = currentPage & 0xFF;
-    data[1] = (currentPage >> 8) & 0xFF;
-    data[2] = 0;
-    data[3] = 0;
-    f.write(data, 4);
-    f.close();
-  }
+  PageProgressStore::save("TRS", txt->getCachePath(), static_cast<uint32_t>(currentPage));
 }
 
 void TxtReaderActivity::loadProgress() {
-  FsFile f;
-  if (Storage.openFileForRead("TRS", txt->getCachePath() + "/progress.bin", f)) {
-    uint8_t data[4];
-    if (f.read(data, 4) == 4) {
-      currentPage = data[0] + (data[1] << 8);
-      if (currentPage >= totalPages) {
-        currentPage = totalPages - 1;
-      }
-      if (currentPage < 0) {
-        currentPage = 0;
-      }
-      LOG_DBG("TRS", "Loaded progress: page %d/%d", currentPage, totalPages);
+  uint32_t savedPage = 0;
+  if (PageProgressStore::load("TRS", txt->getCachePath(), savedPage)) {
+    currentPage = static_cast<int>(savedPage);
+    if (currentPage >= totalPages) {
+      currentPage = totalPages - 1;
     }
-    f.close();
+    if (currentPage < 0) {
+      currentPage = 0;
+    }
+    LOG_DBG("TRS", "Loaded progress: page %d/%d", currentPage, totalPages);
   }
 }
 

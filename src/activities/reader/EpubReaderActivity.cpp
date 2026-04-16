@@ -99,11 +99,7 @@ void EpubReaderActivity::onEnter() {
 void EpubReaderActivity::onExit() {
   Activity::onExit();
 
-  // Reset orientation back to portrait for the rest of the UI
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-
-  APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  ReaderUtils::resetReaderSession(&renderer);
   lastSavedSpineIndex = -1;
   lastSavedPage = -1;
   bookmarks.clear();

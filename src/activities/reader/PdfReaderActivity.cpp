@@ -327,10 +327,8 @@ void PdfReaderActivity::onEnter() {
 
 void PdfReaderActivity::onExit() {
   Activity::onExit();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
   saveProgressNow();
-  APP_STATE.readerActivityLoadCount = 0;
-  APP_STATE.saveToFile();
+  ReaderUtils::resetReaderSession(&renderer);
   lastSavedPage = UINT32_MAX;
   pageReader.close();
   pdf.reset();
