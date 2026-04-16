@@ -8,6 +8,7 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -168,14 +169,23 @@ static void appendTokenWithSpacing(std::string& out, const std::string& token) {
   const bool prevIsAlnum = isAsciiAlnum(prev);
   const bool currIsAlnum = isAsciiAlnum(curr);
   const bool prevEndsJoin = prev == '-' || prev == '/' || prev == '(' || prev == '[' || prev == '{';
-  const bool currStartsJoin = curr == '-' || curr == '/' || curr == ')' || curr == ']' || curr == '}' || curr == ',' ||
-                              curr == '.' || curr == ':' || curr == ';' || curr == '!' || curr == '?';
-  if (!prevEndsJoin && !currStartsJoin && prevIsAlnum && currIsAlnum) {
+  const bool currStartsJoin = curr == '-' || curr == '/' || curr == '@' || curr == ')' || curr == ']' || curr == '}' ||
+                              curr == ',' || curr == '.' || curr == ':' || curr == ';' || curr == '!' || curr == '?';
+  const size_t lastWordStart = out.find_last_of(" \n\t");
+  const size_t wordStart = lastWordStart == std::string::npos ? 0 : lastWordStart + 1;
+  const bool prevTokenLooksHyphenatedPrefix =
+      out.find('-', wordStart) != std::string::npos && prev >= 'A' && prev <= 'Z' && curr >= '0' && curr <= '9';
+  if (prevTokenLooksHyphenatedPrefix) {
+    out += token;
+  } else if (!prevEndsJoin && !currStartsJoin && prevIsAlnum && currIsAlnum) {
     out.push_back(' ');
+    out += token;
   } else if (!prevEndsJoin && !currStartsJoin && prev != ' ' && curr != ' ') {
     out.push_back(' ');
+    out += token;
+  } else {
+    out += token;
   }
-  out += token;
 }
 
 std::string buildPageLinePreview(const PdfPage& page) {
@@ -611,7 +621,7 @@ void testPreviewMatchesPdftotext() {
        "Phasellus facilisis odio sed mi.\nCurabitur suscipit. Nullam vel nisi. Etiam semper ipsum ut lectus. Proin "
        "aliquam, erat eget\npharetra commodo, eros"},
       {"test/pdf/EE-366.pdf", true,
-       "Engineer-to-Engineer Note\n\nEE-366\nTechnical notes on using Analog Devices DSPs, processors and development "
+       "Engineer-to-Engineer Note EE-366\nTechnical notes on using Analog Devices DSPs, processors and development "
        "tools\nVisit our Web resources http://www.analog.com/ee-notes and http://www.analog.com/processors or\n"
        "e-mail processor.support@analog.com or processo"},
       {"test/pdf/esp32-c6_datasheet_en.pdf", true,
@@ -647,6 +657,73 @@ void testPreviewMatchesPdftotext() {
     if (c.strictPrefix) {
       REQUIRE(preview.rfind(c.expectedPrefix, 0) == 0);
     }
+  }
+}
+
+void testFirstPageReadableTextMatchesExpectedPreviews() {
+  struct Case {
+    const char* path;
+    const char* expectedPrefix;
+  };
+  const Case cases[] = {
+      {"test/pdf/EE-366.pdf",
+       "Engineer-to-Engineer Note EE-366\n"
+       "Technical notes on using Analog Devices DSPs, processors and development tools\n"
+       "Visit our Web resources http://www.analog.com/ee-notes and http://www.analog.com/processors or\n"
+       "e-mail processor.support@analog.com or processor.tools.support@analog.com for technical support.\n"
+       "Secure Booting Guide for ADSP-BF70x Blackfin+ Processors"},
+      {"test/pdf/esp32-c6_datasheet_en.pdf",
+       "ESP32-C6 Series\n"
+       "Datasheet Version 1.4\n"
+       "Ultra-low-power SoC with RISC-V single-core microprocessor\n"
+       "2.4 GHz Wi-Fi 6 (802.11ax), Bluetooth® 5 (LE), Zigbee and Thread (802.15.4)\n"
+       "Optional flash in the chip’s package\n"
+       "30 or 22 GPIOs, rich set of peripherals\n"
+       "QFN40 (5×5 mm) or QFN32 (5×5 mm) package\n"
+       "Including:\n"
+       "ESP32-C6\n"
+       "ESP32-C6FH4\n"
+       "ESP32-C6FH8"},
+      {"test/pdf/Problem-Solving Treatment_ Learning and Pl - IHS.pdf",
+       "Brief Counseling Techniques for Your\n"
+       "Most Challenging Patients\n"
+       "Problem-Solving Treatment:\n"
+       "Learning and Planning How to Act,\n"
+       "Not React\n"
+       "Avi Kriechman, M.D.\n"
+       "UNM Department of Psychiatry\n"
+       "Center for Rural and Community Behavioral Health\n"
+       "Division of Child and Adolescent Psychiatry"},
+  };
+
+  for (const auto& c : cases) {
+    HalFile file;
+    REQUIRE(file.loadPath(c.path));
+
+    XrefTable xref;
+    REQUIRE(xref.parse(file));
+
+    PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
+    REQUIRE(xref.readDictForObject(file, xref.rootObjId(), catalogBodyFixed));
+    const std::string catalogBody(catalogBodyFixed.view());
+    const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
+    REQUIRE(pagesObjId != 0);
+
+    PageTree pageTree;
+    REQUIRE(pageTree.parse(file, xref, pagesObjId));
+
+    PdfPage page;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    const uint32_t pageObjId = pageTree.getPageObjectId(0);
+    REQUIRE(pageObjId != 0);
+    REQUIRE(xref.readDictForObject(file, pageObjId, pageBodyFixed));
+    REQUIRE(parseSinglePage(file, xref, std::string(pageBodyFixed.view()), page));
+
+    const std::string preview = buildPageLinePreview(page);
+    if (preview.rfind(c.expectedPrefix, 0) != 0) {
+      std::fprintf(stderr, "Preview mismatch for %s:\n%s\n", c.path, preview.c_str());
+    }
+    REQUIRE(preview.rfind(c.expectedPrefix, 0) == 0);
   }
 }
 
@@ -772,6 +849,27 @@ bool runOnePdf(const char* path) {
   }
   std::printf("     document preview (first %zu chars): %s\n", kDocumentPreviewChars, documentPreview.c_str());
   printFirstTextBlockPreview("page0 first block", page0);
+
+  const uint32_t benchmarkPages = std::min<uint32_t>(pageCount, 3);
+  double parseMs = 0.0;
+  double previewMs = 0.0;
+  size_t benchmarkBlocks = 0;
+  size_t benchmarkChars = 0;
+  for (uint32_t pageIndex = 0; pageIndex < benchmarkPages; ++pageIndex) {
+    PdfPage page;
+    const auto parseStart = std::chrono::steady_clock::now();
+    REQF(loadPage(pageIndex, page));
+    const auto parseEnd = std::chrono::steady_clock::now();
+    const auto previewStart = std::chrono::steady_clock::now();
+    const std::string preview = buildPageLinePreview(page);
+    const auto previewEnd = std::chrono::steady_clock::now();
+    parseMs += std::chrono::duration<double, std::milli>(parseEnd - parseStart).count();
+    previewMs += std::chrono::duration<double, std::milli>(previewEnd - previewStart).count();
+    benchmarkBlocks += page.textBlocks.size();
+    benchmarkChars += preview.size();
+  }
+  std::printf("     page pipeline benchmark: pages=%u parse=%.2fms preview=%.2fms blocks=%zu preview_chars=%zu\n",
+              static_cast<unsigned>(benchmarkPages), parseMs, previewMs, benchmarkBlocks, benchmarkChars);
   return true;
 }
 
@@ -786,6 +884,7 @@ int main(int argc, char** argv) {
   testPdfCachedPageReaderRemainsReusableAfterFailedOpen();
   testInflateReaderLongWindowStreaming();
   testPreviewMatchesPdftotext();
+  testFirstPageReadableTextMatchesExpectedPreviews();
   std::vector<const char*> paths;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) paths.push_back(argv[i]);

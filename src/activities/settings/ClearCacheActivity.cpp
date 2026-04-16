@@ -9,6 +9,10 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
+StrId ClearCacheActivity::titleId() const {
+  return cacheKind == CacheKind::Pdf ? StrId::STR_CLEAR_PDF_CACHE : StrId::STR_CLEAR_EPUB_CACHE;
+}
+
 void ClearCacheActivity::onEnter() {
   Activity::onEnter();
 
@@ -25,7 +29,7 @@ void ClearCacheActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_CLEAR_READING_CACHE));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, I18N.get(titleId()));
 
   if (state == WARNING) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 60, tr(STR_CLEAR_CACHE_WARNING_1), true);
@@ -73,7 +77,7 @@ void ClearCacheActivity::render(RenderLock&&) {
 }
 
 void ClearCacheActivity::clearCache() {
-  LOG_DBG("CLEAR_CACHE", "Clearing cache...");
+  LOG_DBG("CLEAR_CACHE", "Clearing %s cache...", cacheKind == CacheKind::Pdf ? "PDF" : "EPUB/XTC");
 
   // Open .crosspoint directory
   auto root = Storage.open("/.crosspoint");
@@ -94,9 +98,10 @@ void ClearCacheActivity::clearCache() {
     file.getName(name, sizeof(name));
     String itemName(name);
 
-    // Delete per-book caches: epub_, xtc_, pdf_ (see Epub, Xtc, PdfCache under /.crosspoint)
-    if (file.isDirectory() &&
-        (itemName.startsWith("epub_") || itemName.startsWith("xtc_") || itemName.startsWith("pdf_"))) {
+    const bool shouldRemove = cacheKind == CacheKind::Pdf
+                                  ? itemName.startsWith("pdf_")
+                                  : (itemName.startsWith("epub_") || itemName.startsWith("xtc_"));
+    if (file.isDirectory() && shouldRemove) {
       String fullPath = "/.crosspoint/" + itemName;
       LOG_DBG("CLEAR_CACHE", "Removing cache: %s", fullPath.c_str());
 

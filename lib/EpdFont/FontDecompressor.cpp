@@ -35,11 +35,9 @@ void FontDecompressor::freePageBuffer() {
 
 void FontDecompressor::freeHotGroup() {
   hotGroup.clear();
-  hotGroup.shrink_to_fit();
   hotGroupFont = nullptr;
   hotGroupIndex = UINT16_MAX;
   hotGlyphBuf.clear();
-  hotGlyphBuf.shrink_to_fit();
 }
 
 uint16_t FontDecompressor::getGroupIndex(const EpdFontData* fontData, uint32_t glyphIndex) {
@@ -186,7 +184,6 @@ const uint8_t* FontDecompressor::getBitmap(const EpdFontData* fontData, const Ep
 
     if (!decompressGroup(fontData, groupIndex, hotGroup.data(), group.uncompressedSize)) {
       hotGroup.clear();
-      hotGroup.shrink_to_fit();
       hotGroupFont = nullptr;
       hotGroupIndex = UINT16_MAX;
       stats.getBitmapTimeUs += micros() - tStart;

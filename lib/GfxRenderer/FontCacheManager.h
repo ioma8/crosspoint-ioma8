@@ -4,7 +4,8 @@
 
 #include <cstdint>
 #include <map>
-#include <string>
+
+#include "Utf8CodepointCollector.h"
 
 class FontDecompressor;
 
@@ -49,7 +50,7 @@ class FontCacheManager {
 
   enum class ScanMode : uint8_t { None, Scanning };
   ScanMode scanMode_ = ScanMode::None;
-  std::string scanText_;
+  Utf8CodepointCollector scanCodepoints_;
   uint32_t scanStyleCounts_[4] = {};
   int scanFontId_ = -1;
 };

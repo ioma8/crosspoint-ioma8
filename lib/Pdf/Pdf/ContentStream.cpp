@@ -984,6 +984,11 @@ static void stripPdfExtractedNoiseUtf8(std::string& s) {
   s = std::move(out);
 }
 
+static bool startsWithAt(const std::string& s, size_t pos, const char* needle) {
+  const size_t len = std::strlen(needle);
+  return pos + len <= s.size() && std::memcmp(s.data() + pos, needle, len) == 0;
+}
+
 static void appendDecomposedLigature(std::string& out, uint32_t cp) {
   switch (cp) {
     case 0xFB00:
@@ -1046,6 +1051,28 @@ static void normalizePdfText(std::string& s) {
   stripPdfExtractedNoiseUtf8(s);
 }
 
+static bool isAsciiLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+
+static void repairCommonPdfTextSpacing(std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size();) {
+    if (!out.empty() && out.back() == ' ' &&
+        (startsWithAt(s, i, "\302\256") || startsWithAt(s, i, "\342\204\242") || startsWithAt(s, i, "\302\251"))) {
+      out.pop_back();
+    }
+    if (i + 3 < s.size() && s[i] == ' ' && s[i + 1] == 's' && s[i + 2] == ' ' && !out.empty() &&
+        isAsciiLetter(out.back()) && isAsciiLetter(s[i + 3])) {
+      out += "\342\200\231s";
+      i += 2;
+      continue;
+    }
+    out.push_back(s[i]);
+    ++i;
+  }
+  s = std::move(out);
+}
+
 static float estimateTextAdvance(const std::string& utf8, uint16_t fontSize) {
   size_t glyphs = 0;
   for (size_t i = 0; i < utf8.size();) {
@@ -1097,8 +1124,9 @@ struct BlockPlacementState {
 
 void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCounter, BlockPlacementState& placement) {
   if (runs.empty()) return;
-  auto pushBlock = [&](std::string& block, float y, float startX, float endX, uint16_t maxFontSize, uint8_t styleBits) {
+  auto pushBlock = [&](std::string& block, float y, float endX, uint16_t maxFontSize, uint8_t styleBits) {
     normalizePdfText(block);
+    repairCommonPdfTextSpacing(block);
     if (block.empty()) {
       return;
     }
@@ -1116,14 +1144,7 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
     tb.style = styleBits;
     uint32_t hint = static_cast<uint32_t>(std::lround(y * 100.0f));
     if (placement.havePrev && std::fabs(y - placement.prevY) < sameLineThreshold(placement.prevFontSize, maxFontSize)) {
-      const float splitGap =
-          std::max(60.0f, static_cast<float>(std::max<uint16_t>(placement.prevFontSize, maxFontSize)) * 2.5f);
-      const bool allowSyntheticSplit = std::max<uint16_t>(placement.prevFontSize, maxFontSize) >= 18;
-      if (allowSyntheticSplit && (startX - placement.prevEndX) > splitGap) {
-        hint = placement.prevHint + 20u;
-      } else {
-        hint = placement.prevHint;
-      }
+      hint = placement.prevHint;
     }
     tb.orderHint = hint;
     page.textBlocks.push_back(std::move(tb));
@@ -1138,7 +1159,6 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
 
   std::string block = runs[0].utf8;
   float lineY = runs[0].y;
-  float lineStartX = runs[0].x;
   uint16_t maxFontSize = runs[0].fontSize;
   uint8_t styleBits = runs[0].style;
   float blockEndX = runs[0].endX;
@@ -1155,16 +1175,15 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
       maxFontSize = std::max(maxFontSize, runs[i].fontSize);
       blockEndX = std::max(blockEndX, runs[i].endX);
     } else {
-      pushBlock(block, lineY, lineStartX, blockEndX, maxFontSize, styleBits);
+      pushBlock(block, lineY, blockEndX, maxFontSize, styleBits);
       block = runs[i].utf8;
       lineY = runs[i].y;
-      lineStartX = runs[i].x;
       maxFontSize = runs[i].fontSize;
       styleBits = runs[i].style;
       blockEndX = runs[i].endX;
     }
   }
-  pushBlock(block, lineY, lineStartX, blockEndX, maxFontSize, styleBits);
+  pushBlock(block, lineY, blockEndX, maxFontSize, styleBits);
   runs.clear();
 }
 

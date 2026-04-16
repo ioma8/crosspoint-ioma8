@@ -45,14 +45,19 @@ void PdfReaderActivity::ensureLayout() {
     return;
   }
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
-  cachedFontId = SETTINGS.getReaderFontId();
+  const int nextFontId = SETTINGS.getReaderFontId();
   renderer.getOrientedViewableTRBL(&marginTop, &marginRight, &marginBottom, &marginLeft);
   const uint8_t sm = SETTINGS.screenMargin;
   marginTop += sm;
   marginLeft += sm;
   marginRight += sm;
   marginBottom += std::max(sm, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight()));
-  viewportWidth = renderer.getScreenWidth() - marginLeft - marginRight;
+  const int nextViewportWidth = renderer.getScreenWidth() - marginLeft - marginRight;
+  if (cachedFontId != nextFontId || viewportWidth != nextViewportWidth) {
+    wrappedTextCache_.clear();
+  }
+  cachedFontId = nextFontId;
+  viewportWidth = nextViewportWidth;
   layoutReady = true;
 }
 
@@ -74,6 +79,7 @@ bool PdfReaderActivity::loadPage(uint32_t page) {
   loadedPage = page;
   navigationState.page = page;
   navigationState.slice = 0;
+  wrappedTextCache_.clear();
   rebuildPageSlices();
   return !pageSliceStarts.empty();
 }
@@ -92,37 +98,63 @@ bool PdfReaderActivity::renderPdfImage(const PdfImageDescriptor& img, int y, int
     return false;
   }
 
-  const char* name = img.format == 0 ? "_tmpimg.jpg" : "_tmpimg.png";
-  const std::string tmpPath = std::string(dir) + "/" + name;
-  FsFile wf;
-  if (!Storage.openFileForWrite("PDF", tmpPath, wf)) {
-    return false;
-  }
-
-  const size_t got = pdf->extractImageStreamToFile(img, wf, kMaxPdfImageStreamBytes);
-  wf.close();
-  bool drawn = false;
-  if (got >= 4) {
-    RenderConfig cfg;
-    cfg.x = marginLeft;
-    cfg.y = y;
-    cfg.maxWidth = viewportWidth;
-    cfg.maxHeight = bottomLimit - y;
-    cfg.useGrayscale = true;
-    cfg.useDithering = true;
-    if (cfg.maxHeight >= 16) {
-      if (img.format == 0) {
-        JpegToFramebufferConverter jpg;
-        drawn = jpg.decodeToFramebuffer(tmpPath, renderer, cfg);
-      } else {
-        PngToFramebufferConverter png;
-        drawn = png.decodeToFramebuffer(tmpPath, renderer, cfg);
-      }
+  char name[96];
+  std::snprintf(name, sizeof(name), "/img_%lu_%lu.%s", static_cast<unsigned long>(img.pdfStreamOffset),
+                static_cast<unsigned long>(img.pdfStreamLength), img.format == 0 ? "jpg" : "png");
+  const std::string imagePath = std::string(dir) + name;
+  if (!Storage.exists(imagePath.c_str())) {
+    FsFile wf;
+    if (!Storage.openFileForWrite("PDF", imagePath, wf)) {
+      return false;
+    }
+    const size_t got = pdf->extractImageStreamToFile(img, wf, kMaxPdfImageStreamBytes);
+    wf.close();
+    if (got < 4) {
+      Storage.remove(imagePath.c_str());
+      return false;
     }
   }
 
-  Storage.remove(tmpPath.c_str());
+  bool drawn = false;
+  RenderConfig cfg;
+  cfg.x = marginLeft;
+  cfg.y = y;
+  cfg.maxWidth = viewportWidth;
+  cfg.maxHeight = bottomLimit - y;
+  cfg.useGrayscale = true;
+  cfg.useDithering = true;
+  if (cfg.maxHeight >= 16) {
+    if (img.format == 0) {
+      JpegToFramebufferConverter jpg;
+      drawn = jpg.decodeToFramebuffer(imagePath, renderer, cfg);
+    } else {
+      PngToFramebufferConverter png;
+      drawn = png.decodeToFramebuffer(imagePath, renderer, cfg);
+    }
+  }
+
   return drawn;
+}
+
+const std::vector<std::string>& PdfReaderActivity::getWrappedTextLines(uint32_t textIndex, const PdfTextBlock& block,
+                                                                       EpdFontFamily::Style style) {
+  const auto it = std::find_if(wrappedTextCache_.begin(), wrappedTextCache_.end(), [&](const auto& entry) {
+    return entry.textIndex == textIndex && entry.fontId == cachedFontId && entry.width == viewportWidth &&
+           entry.style == style;
+  });
+  if (it != wrappedTextCache_.end()) {
+    return it->lines;
+  }
+
+  constexpr int kMaxLines = 400;
+  WrappedTextCacheEntry entry;
+  entry.textIndex = textIndex;
+  entry.fontId = cachedFontId;
+  entry.width = viewportWidth;
+  entry.style = style;
+  entry.lines = renderer.wrappedText(cachedFontId, block.text.c_str(), viewportWidth, kMaxLines, style);
+  wrappedTextCache_.push_back(std::move(entry));
+  return wrappedTextCache_.back().lines;
 }
 
 bool PdfReaderActivity::renderPageSlice(PdfCachedPageReader& page, const PdfRenderCursor& start, PdfRenderCursor& next,
@@ -169,10 +201,9 @@ bool PdfReaderActivity::renderPageSlice(PdfCachedPageReader& page, const PdfRend
       return true;
     }
 
-    constexpr int kMaxLines = 400;
     const auto textStyle = toRendererStyle(block.style);
     const bool isHeader = (block.style & PdfTextStyleHeader) != 0;
-    const auto lines = renderer.wrappedText(cachedFontId, block.text.c_str(), viewportWidth, kMaxLines, textStyle);
+    const auto& lines = getWrappedTextLines(textIndex, block, textStyle);
     if (startLine > lines.size()) {
       startLine = lines.size();
     }
@@ -333,6 +364,7 @@ void PdfReaderActivity::onExit() {
   pageReader.close();
   pdf.reset();
   bookmarks.clear();
+  wrappedTextCache_.clear();
   layoutReady = false;
 }
 

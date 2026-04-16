@@ -2,6 +2,7 @@
 
 #include <Pdf.h>
 
+#include <string>
 #include <vector>
 
 #include "Pdf/PdfCachedPageReader.h"
@@ -15,6 +16,14 @@ class PdfReaderActivity final : public Activity {
     size_t lineIndex = 0;
   };
 
+  struct WrappedTextCacheEntry {
+    uint32_t textIndex = UINT32_MAX;
+    int fontId = 0;
+    int width = 0;
+    EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+    std::vector<std::string> lines;
+  };
+
   std::unique_ptr<Pdf> pdf;
   uint32_t currentPage = 0;
   uint32_t totalPages = 0;
@@ -25,6 +34,7 @@ class PdfReaderActivity final : public Activity {
   PdfFixedVector<PdfRenderCursor, PDF_MAX_PAGE_SLICES> pageSliceStarts;
   PdfPageNavigationState navigationState;
   PdfPage scratchPage_;
+  std::vector<WrappedTextCacheEntry> wrappedTextCache_;
 
   int cachedFontId = 0;
   int viewportWidth = 0;
@@ -40,6 +50,8 @@ class PdfReaderActivity final : public Activity {
   bool renderPageSlice(PdfCachedPageReader& page, const PdfRenderCursor& start, PdfRenderCursor& next, bool draw);
   void rebuildPageSlices();
   bool loadPage(uint32_t page);
+  const std::vector<std::string>& getWrappedTextLines(uint32_t textIndex, const PdfTextBlock& block,
+                                                      EpdFontFamily::Style style);
   void renderContents(PdfCachedPageReader& page);
   void renderStatusBar() const;
   void saveProgressNow();

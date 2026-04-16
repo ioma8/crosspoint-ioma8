@@ -17,7 +17,8 @@ enum class SettingAction {
   KOReaderSync,
   OPDSBrowser,
   Network,
-  ClearCache,
+  ClearEpubCache,
+  ClearPdfCache,
   CheckForUpdates,
   Language,
 };
