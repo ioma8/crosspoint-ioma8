@@ -1,7 +1,8 @@
 # CrossPoint Reader with PDF Support
 
 CrossPoint Reader with PDF Support is a fork of the original **CrossPoint / Xteink X4 e-book reader firmware**.
-It keeps the open firmware foundation and adds a practical PDF reading path for the device.
+It keeps the open firmware foundation and adds a practical PDF reading path, SD-card bookmarks, and reader navigation
+improvements for the device.
 
 ![](./docs/images/cover.jpg)
 
