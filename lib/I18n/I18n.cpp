@@ -1,5 +1,6 @@
 #include "I18n.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <HardwareSerial.h>
 #include <Serialization.h>
@@ -45,7 +46,7 @@ const char* I18n::getLanguageName(Language lang) const {
 }
 
 void I18n::saveSettings() {
-  Storage.mkdir("/.crosspoint");
+  FsHelpers::ensureCrossPointDataDir();
 
   FsFile file;
   if (!Storage.openFileForWrite("I18N", SETTINGS_FILE, file)) {

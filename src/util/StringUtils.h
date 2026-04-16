@@ -4,6 +4,10 @@
 
 namespace StringUtils {
 
+std::string baseName(const std::string& path);
+std::string dirName(const std::string& path);
+std::string stem(const std::string& path);
+
 /**
  * Sanitize a string for use as a filename.
  * Replaces invalid characters with underscores, trims spaces/dots,

@@ -7,6 +7,7 @@
 
 #include "Xtc.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -44,19 +45,7 @@ bool Xtc::clearCache() const {
   return true;
 }
 
-void Xtc::setupCacheDir() const {
-  if (Storage.exists(cachePath.c_str())) {
-    return;
-  }
-
-  // Create directories recursively
-  for (size_t i = 1; i < cachePath.length(); i++) {
-    if (cachePath[i] == '/') {
-      Storage.mkdir(cachePath.substr(0, i).c_str());
-    }
-  }
-  Storage.mkdir(cachePath.c_str());
-}
+void Xtc::setupCacheDir() const { FsHelpers::ensureDirectoryRecursive(cachePath); }
 
 std::string Xtc::getTitle() const {
   if (!loaded || !parser) {
@@ -69,21 +58,7 @@ std::string Xtc::getTitle() const {
     return title;
   }
 
-  // Fallback: extract filename from path as title
-  size_t lastSlash = filepath.find_last_of('/');
-  size_t lastDot = filepath.find_last_of('.');
-
-  if (lastSlash == std::string::npos) {
-    lastSlash = 0;
-  } else {
-    lastSlash++;
-  }
-
-  if (lastDot == std::string::npos || lastDot <= lastSlash) {
-    return filepath.substr(lastSlash);
-  }
-
-  return filepath.substr(lastSlash, lastDot - lastSlash);
+  return FsHelpers::stem(filepath);
 }
 
 std::string Xtc::getAuthor() const {

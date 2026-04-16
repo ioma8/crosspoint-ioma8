@@ -799,16 +799,26 @@ bool WebDAVHandler::getOverwrite(WebServer& s) const {
 }
 
 void WebDAVHandler::clearEpubCacheIfNeeded(const String& path) const {
-  if (FsHelpers::hasEpubExtension(path)) {
+  if (FsHelpers::detectFileType(path.c_str()) == FsHelpers::FileType::Epub) {
     Epub(path.c_str(), "/.crosspoint").clearCache();
     LOG_DBG("DAV", "Cleared epub cache for: %s", path.c_str());
   }
 }
 
 String WebDAVHandler::getMimeType(const String& path) const {
-  if (FsHelpers::hasEpubExtension(path)) return "application/epub+zip";
-  if (FsHelpers::checkFileExtension(path, ".pdf")) return "application/pdf";
-  if (FsHelpers::hasTxtExtension(path)) return "text/plain";
+  switch (FsHelpers::detectFileType(path.c_str())) {
+    case FsHelpers::FileType::Epub:
+      return "application/epub+zip";
+    case FsHelpers::FileType::Pdf:
+      return "application/pdf";
+    case FsHelpers::FileType::Text:
+      return "text/plain";
+    case FsHelpers::FileType::Directory:
+    case FsHelpers::FileType::Xtc:
+    case FsHelpers::FileType::Image:
+    case FsHelpers::FileType::Other:
+      break;
+  }
   if (FsHelpers::checkFileExtension(path, ".html") || FsHelpers::checkFileExtension(path, ".htm")) return "text/html";
   if (FsHelpers::checkFileExtension(path, ".css")) return "text/css";
   if (FsHelpers::checkFileExtension(path, ".js")) return "application/javascript";

@@ -80,6 +80,22 @@ bool handleBookmarkChord(const MappedInputManager& input, bool& chordActive, con
   return false;
 }
 
+template <typename LongPressFn, typename ShortPressFn>
+bool handleBackNavigation(const MappedInputManager& input, const LongPressFn& onLongPress,
+                          const ShortPressFn& onShortPress) {
+  if (input.isPressed(MappedInputManager::Button::Back) && input.getHeldTime() >= GO_HOME_MS) {
+    onLongPress();
+    return true;
+  }
+
+  if (input.wasReleased(MappedInputManager::Button::Back) && input.getHeldTime() < GO_HOME_MS) {
+    onShortPress();
+    return true;
+  }
+
+  return false;
+}
+
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {
   if (pagesUntilFullRefresh <= 1) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);

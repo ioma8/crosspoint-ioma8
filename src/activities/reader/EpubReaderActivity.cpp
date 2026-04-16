@@ -168,20 +168,15 @@ void EpubReaderActivity::loop() {
                            });
   }
 
-  // Long press BACK (1s+) goes to file selection
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-    activityManager.goToFileBrowser(epub ? epub->getPath() : "");
-    return;
-  }
-
-  // Short press BACK goes directly to home (or restores position if viewing footnote)
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    if (footnoteDepth > 0) {
-      restoreSavedPosition();
-      return;
-    }
-    onGoHome();
+  if (ReaderUtils::handleBackNavigation(
+          mappedInput, [this] { activityManager.goToFileBrowser(epub ? epub->getPath() : ""); },
+          [this] {
+            if (footnoteDepth > 0) {
+              restoreSavedPosition();
+              return;
+            }
+            onGoHome();
+          })) {
     return;
   }
 
@@ -461,8 +456,7 @@ void EpubReaderActivity::toggleCurrentBookmark() {
 
   const ReaderBookmark bookmark{static_cast<uint32_t>(currentSpineIndex), static_cast<uint32_t>(section->currentPage),
                                 getCurrentBookProgressPercent(), getCurrentPageSnippet()};
-  if (ReaderBookmarkStore::toggle(epub->getCachePath(), bookmark)) {
-    ReaderBookmarkStore::load(epub->getCachePath(), bookmarks);
+  if (ReaderBookmarkStore::toggleAndReload(epub->getCachePath(), bookmark, bookmarks)) {
     requestUpdate();
   }
 }
@@ -492,9 +486,7 @@ void EpubReaderActivity::openBookmarkSelection() {
 }
 
 void EpubReaderActivity::drawBookmarkIndicatorIfNeeded() {
-  if (isCurrentPageBookmarked()) {
-    ReaderBookmarkIndicator::draw(renderer);
-  }
+  ReaderBookmarkIndicator::drawIf(renderer, isCurrentPageBookmarked());
 }
 
 void EpubReaderActivity::applyOrientation(const uint8_t orientation) {

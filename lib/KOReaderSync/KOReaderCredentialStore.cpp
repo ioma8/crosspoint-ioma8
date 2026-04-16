@@ -1,5 +1,6 @@
 #include "KOReaderCredentialStore.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <MD5Builder.h>
@@ -35,7 +36,7 @@ void legacyDeobfuscate(std::string& data) {
 }  // namespace
 
 bool KOReaderCredentialStore::saveToFile() const {
-  Storage.mkdir("/.crosspoint");
+  FsHelpers::ensureCrossPointDataDir();
   return JsonSettingsIO::saveKOReader(*this, KOREADER_FILE_JSON);
 }
 

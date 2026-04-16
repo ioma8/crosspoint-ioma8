@@ -477,13 +477,7 @@ bool Epub::clearCache() const {
   return true;
 }
 
-void Epub::setupCacheDir() const {
-  if (Storage.exists(cachePath.c_str())) {
-    return;
-  }
-
-  Storage.mkdir(cachePath.c_str());
-}
+void Epub::setupCacheDir() const { FsHelpers::ensureDirectoryRecursive(cachePath); }
 
 const std::string& Epub::getCachePath() const { return cachePath; }
 

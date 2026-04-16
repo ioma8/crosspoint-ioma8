@@ -16,4 +16,10 @@ void draw(const GfxRenderer& renderer) {
   renderer.fillPolygon(notchX, notchY, 3, false);
 }
 
+void drawIf(const GfxRenderer& renderer, const bool visible) {
+  if (visible) {
+    draw(renderer);
+  }
+}
+
 }  // namespace ReaderBookmarkIndicator

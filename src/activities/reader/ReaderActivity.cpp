@@ -15,25 +15,23 @@
 #include "XtcReaderActivity.h"
 #include "activities/util/BmpViewerActivity.h"
 #include "activities/util/FullScreenMessageActivity.h"
+#include "util/StringUtils.h"
 
-std::string ReaderActivity::extractFolderPath(const std::string& filePath) {
-  const auto lastSlash = filePath.find_last_of('/');
-  if (lastSlash == std::string::npos || lastSlash == 0) {
-    return "/";
-  }
-  return filePath.substr(0, lastSlash);
+std::string ReaderActivity::extractFolderPath(const std::string& filePath) { return StringUtils::dirName(filePath); }
+
+bool ReaderActivity::isXtcFile(const std::string& path) {
+  return FsHelpers::detectFileType(path) == FsHelpers::FileType::Xtc;
 }
 
-bool ReaderActivity::isXtcFile(const std::string& path) { return FsHelpers::hasXtcExtension(path); }
+bool ReaderActivity::isTxtFile(const std::string& path) { return FsHelpers::isTextDocument(path); }
 
-bool ReaderActivity::isTxtFile(const std::string& path) {
-  return FsHelpers::hasTxtExtension(path) ||
-         FsHelpers::hasMarkdownExtension(path);  // Treat .md as txt files (until we have a markdown reader)
+bool ReaderActivity::isBmpFile(const std::string& path) {
+  return FsHelpers::detectFileType(path) == FsHelpers::FileType::Image;
 }
 
-bool ReaderActivity::isBmpFile(const std::string& path) { return FsHelpers::hasBmpExtension(path); }
-
-bool ReaderActivity::isPdfFile(const std::string& path) { return FsHelpers::hasPdfExtension(path); }
+bool ReaderActivity::isPdfFile(const std::string& path) {
+  return FsHelpers::detectFileType(path) == FsHelpers::FileType::Pdf;
+}
 
 std::unique_ptr<Pdf> ReaderActivity::loadPdf(const std::string& path) {
   auto pdf = std::make_unique<Pdf>();

@@ -6,7 +6,15 @@
 
 namespace FsHelpers {
 
+enum class FileType { Directory, Epub, Pdf, Xtc, Text, Image, Other };
+
 std::string normalisePath(const std::string& path);
+std::string baseName(const std::string& path);
+std::string dirName(const std::string& path);
+std::string stem(const std::string& path);
+bool ensureDirectory(const std::string& path);
+bool ensureDirectoryRecursive(const std::string& path);
+bool ensureCrossPointDataDir();
 
 /**
  * Check if the given filename ends with the specified extension (case-insensitive).
@@ -57,5 +65,10 @@ bool hasMarkdownExtension(std::string_view fileName);
 
 // Check for .pdf extension (case-insensitive)
 bool hasPdfExtension(std::string_view fileName);
+
+FileType detectFileType(std::string_view path);
+bool isTextDocument(std::string_view path);
+bool isReadableDocument(std::string_view path);
+bool isSupportedFile(std::string_view path);
 
 }  // namespace FsHelpers

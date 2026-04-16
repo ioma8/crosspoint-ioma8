@@ -1,5 +1,6 @@
 #include "WifiCredentialStore.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
@@ -30,7 +31,7 @@ void legacyDeobfuscate(std::string& data) {
 }  // namespace
 
 bool WifiCredentialStore::saveToFile() const {
-  Storage.mkdir("/.crosspoint");
+  FsHelpers::ensureCrossPointDataDir();
   return JsonSettingsIO::saveWifi(*this, WIFI_FILE_JSON);
 }
 

@@ -1,8 +1,15 @@
 #include "StringUtils.h"
 
+#include <FsHelpers.h>
 #include <Utf8.h>
 
 namespace StringUtils {
+
+std::string baseName(const std::string& path) { return FsHelpers::baseName(path); }
+
+std::string dirName(const std::string& path) { return FsHelpers::dirName(path); }
+
+std::string stem(const std::string& path) { return FsHelpers::stem(path); }
 
 std::string sanitizeFilename(const std::string& name, size_t maxBytes) {
   std::string result;

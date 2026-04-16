@@ -17,6 +17,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 namespace {
 constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
@@ -39,7 +40,7 @@ void TxtReaderActivity::onEnter() {
 
   // Save current txt as last opened file and add to recent books
   auto filePath = txt->getPath();
-  auto fileName = filePath.substr(filePath.rfind('/') + 1);
+  auto fileName = StringUtils::baseName(filePath);
   APP_STATE.openEpubPath = filePath;
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(filePath, fileName, "", "");
@@ -68,16 +69,9 @@ void TxtReaderActivity::loop() {
     return;
   }
 
-  // Long press BACK (1s+) goes to file selection
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-    activityManager.goToFileBrowser(txt ? txt->getPath() : "");
-    return;
-  }
-
-  // Short press BACK goes directly to home
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    onGoHome();
+  if (ReaderUtils::handleBackNavigation(
+          mappedInput, [this] { activityManager.goToFileBrowser(txt ? txt->getPath() : ""); },
+          [this] { onGoHome(); })) {
     return;
   }
 
@@ -386,8 +380,7 @@ void TxtReaderActivity::toggleCurrentBookmark() {
 
   const ReaderBookmark bookmark{static_cast<uint32_t>(currentPage), 0, getCurrentBookProgressPercent(),
                                 getCurrentPageSnippet()};
-  if (ReaderBookmarkStore::toggle(txt->getCachePath(), bookmark)) {
-    ReaderBookmarkStore::load(txt->getCachePath(), bookmarks);
+  if (ReaderBookmarkStore::toggleAndReload(txt->getCachePath(), bookmark, bookmarks)) {
     requestUpdate();
   }
 }
@@ -414,9 +407,7 @@ void TxtReaderActivity::openBookmarkSelection() {
 }
 
 void TxtReaderActivity::drawBookmarkIndicatorIfNeeded() {
-  if (isCurrentPageBookmarked()) {
-    ReaderBookmarkIndicator::draw(renderer);
-  }
+  ReaderBookmarkIndicator::drawIf(renderer, isCurrentPageBookmarked());
 }
 
 void TxtReaderActivity::renderPage() {

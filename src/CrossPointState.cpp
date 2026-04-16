@@ -1,5 +1,6 @@
 #include "CrossPointState.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
@@ -15,7 +16,7 @@ constexpr char STATE_FILE_BAK[] = "/.crosspoint/state.bin.bak";
 CrossPointState CrossPointState::instance;
 
 bool CrossPointState::saveToFile() const {
-  Storage.mkdir("/.crosspoint");
+  FsHelpers::ensureCrossPointDataDir();
   return JsonSettingsIO::saveState(*this, STATE_FILE_JSON);
 }
 

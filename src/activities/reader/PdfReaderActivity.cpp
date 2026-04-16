@@ -23,6 +23,7 @@
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/StringUtils.h"
 
 namespace {
 // Cap stream buffer for embedded heap; corrupt PDFs can advertise huge lengths.
@@ -314,8 +315,7 @@ void PdfReaderActivity::onEnter() {
   }
 
   const auto path = std::string(pdf->filePath().c_str());
-  const auto slash = path.find_last_of('/');
-  const auto fileName = slash == std::string::npos ? path : path.substr(slash + 1);
+  const auto fileName = StringUtils::baseName(path);
   APP_STATE.openEpubPath = path;
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(path, fileName, "", "");
@@ -355,16 +355,16 @@ void PdfReaderActivity::loop() {
     return;
   }
 
-  if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
-    saveProgressNow();
-    activityManager.goToFileBrowser(std::string(pdf->filePath().c_str()));
-    return;
-  }
-
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) &&
-      mappedInput.getHeldTime() < ReaderUtils::GO_HOME_MS) {
-    saveProgressNow();
-    onGoHome();
+  if (ReaderUtils::handleBackNavigation(
+          mappedInput,
+          [this] {
+            saveProgressNow();
+            activityManager.goToFileBrowser(std::string(pdf->filePath().c_str()));
+          },
+          [this] {
+            saveProgressNow();
+            onGoHome();
+          })) {
     return;
   }
 
@@ -467,8 +467,7 @@ void PdfReaderActivity::toggleCurrentBookmark() {
   }
 
   const ReaderBookmark bookmark{currentPage, 0, getCurrentBookProgressPercent(), getCurrentPageSnippet()};
-  if (ReaderBookmarkStore::toggle(std::string(pdf->cacheDirectory().c_str()), bookmark)) {
-    ReaderBookmarkStore::load(std::string(pdf->cacheDirectory().c_str()), bookmarks);
+  if (ReaderBookmarkStore::toggleAndReload(std::string(pdf->cacheDirectory().c_str()), bookmark, bookmarks)) {
     requestUpdate();
   }
 }
@@ -490,9 +489,7 @@ void PdfReaderActivity::openBookmarkSelection() {
 }
 
 void PdfReaderActivity::drawBookmarkIndicatorIfNeeded() {
-  if (isCurrentPageBookmarked()) {
-    ReaderBookmarkIndicator::draw(renderer);
-  }
+  ReaderBookmarkIndicator::drawIf(renderer, isCurrentPageBookmarked());
 }
 
 void PdfReaderActivity::renderStatusBar() const {
@@ -502,9 +499,7 @@ void PdfReaderActivity::renderStatusBar() const {
   const float progress = static_cast<float>(currentPage + 1) * 100.0f / static_cast<float>(totalPages);
   std::string title;
   if (SETTINGS.statusBarTitle != CrossPointSettings::STATUS_BAR_TITLE::HIDE_TITLE) {
-    const auto path = std::string(pdf->filePath().c_str());
-    const auto slash = path.find_last_of('/');
-    title = slash == std::string::npos ? path : path.substr(slash + 1);
+    title = StringUtils::baseName(std::string(pdf->filePath().c_str()));
   }
   GUI.drawStatusBar(renderer, progress, static_cast<int>(currentPage + 1), static_cast<int>(totalPages), title);
 }

@@ -75,20 +75,20 @@ std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight
 }
 
 UIIcon UITheme::getFileIcon(const std::string& filename) {
-  if (filename.back() == '/') {
-    return Folder;
-  }
-  if (FsHelpers::hasPdfExtension(filename)) {
-    return PdfDocument;
-  }
-  if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename)) {
-    return EpubBook;
-  }
-  if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
-    return Text;
-  }
-  if (FsHelpers::hasBmpExtension(filename)) {
-    return Image;
+  switch (FsHelpers::detectFileType(filename)) {
+    case FsHelpers::FileType::Directory:
+      return Folder;
+    case FsHelpers::FileType::Pdf:
+      return PdfDocument;
+    case FsHelpers::FileType::Epub:
+    case FsHelpers::FileType::Xtc:
+      return EpubBook;
+    case FsHelpers::FileType::Text:
+      return Text;
+    case FsHelpers::FileType::Image:
+      return Image;
+    case FsHelpers::FileType::Other:
+      return File;
   }
   return File;
 }

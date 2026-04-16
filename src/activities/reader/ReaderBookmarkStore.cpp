@@ -52,4 +52,12 @@ bool toggle(const std::string& cachePath, const ReaderBookmark& bookmark) {
   return save(cachePath, bookmarks);
 }
 
+bool toggleAndReload(const std::string& cachePath, const ReaderBookmark& bookmark,
+                     std::vector<ReaderBookmark>& bookmarks) {
+  if (!toggle(cachePath, bookmark)) {
+    return false;
+  }
+  return load(cachePath, bookmarks);
+}
+
 }  // namespace ReaderBookmarkStore

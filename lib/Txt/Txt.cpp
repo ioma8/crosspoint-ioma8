@@ -35,36 +35,15 @@ bool Txt::load() {
   return true;
 }
 
-std::string Txt::getTitle() const {
-  // Extract filename without path and extension
-  size_t lastSlash = filepath.find_last_of('/');
-  std::string filename = (lastSlash != std::string::npos) ? filepath.substr(lastSlash + 1) : filepath;
-
-  // Remove .txt extension
-  if (FsHelpers::hasTxtExtension(filename)) {
-    filename = filename.substr(0, filename.length() - 4);
-  }
-
-  return filename;
-}
+std::string Txt::getTitle() const { return FsHelpers::stem(filepath); }
 
 void Txt::setupCacheDir() const {
-  if (!Storage.exists(cacheBasePath.c_str())) {
-    Storage.mkdir(cacheBasePath.c_str());
-  }
-  if (!Storage.exists(cachePath.c_str())) {
-    Storage.mkdir(cachePath.c_str());
-  }
+  FsHelpers::ensureDirectoryRecursive(cacheBasePath);
+  FsHelpers::ensureDirectoryRecursive(cachePath);
 }
 
 std::string Txt::findCoverImage() const {
-  // Get the folder containing the txt file
-  size_t lastSlash = filepath.find_last_of('/');
-  std::string folder = (lastSlash != std::string::npos) ? filepath.substr(0, lastSlash) : "";
-  if (folder.empty()) {
-    folder = "/";
-  }
-
+  const std::string folder = FsHelpers::dirName(filepath);
   // Get the base filename without extension (e.g., "mybook" from "/books/mybook.txt")
   std::string baseName = getTitle();
 

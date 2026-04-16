@@ -1,5 +1,6 @@
 #include "CrossPointSettings.h"
 
+#include <FsHelpers.h>
 #include <HalStorage.h>
 #include <JsonSettingsIO.h>
 #include <Logging.h>
@@ -77,7 +78,7 @@ void CrossPointSettings::validateFrontButtonMapping(CrossPointSettings& settings
 }
 
 bool CrossPointSettings::saveToFile() const {
-  Storage.mkdir("/.crosspoint");
+  FsHelpers::ensureCrossPointDataDir();
   return JsonSettingsIO::saveSettings(*this, SETTINGS_FILE_JSON);
 }
 
