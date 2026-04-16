@@ -10,8 +10,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 
-ReaderBookmarkSelectionActivity::ReaderBookmarkSelectionActivity(GfxRenderer& renderer,
-                                                                 MappedInputManager& mappedInput,
+ReaderBookmarkSelectionActivity::ReaderBookmarkSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                                                                  std::vector<ReaderBookmark> bookmarks)
     : Activity("ReaderBookmarkSelection", renderer, mappedInput), bookmarks(std::move(bookmarks)) {}
 
