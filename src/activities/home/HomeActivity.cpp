@@ -12,10 +12,10 @@
 #include <cstring>
 #include <vector>
 
-#include "CrossPointSettings.h"
-#include "CrossPointState.h"
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
+#include "app/CrossPointSettings.h"
+#include "app/CrossPointState.h"
+#include "app/MappedInputManager.h"
+#include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 

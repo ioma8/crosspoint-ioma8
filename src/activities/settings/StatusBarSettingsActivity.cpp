@@ -5,8 +5,8 @@
 
 #include <cstring>
 
-#include "CrossPointSettings.h"
-#include "MappedInputManager.h"
+#include "app/CrossPointSettings.h"
+#include "app/MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 

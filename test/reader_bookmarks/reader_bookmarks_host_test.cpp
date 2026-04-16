@@ -2,7 +2,7 @@
 #include <iostream>
 #include <vector>
 
-#include "../../src/activities/reader/ReaderBookmarkCodec.h"
+#include "ReaderBookmarkCodec.h"
 
 int main() {
   std::vector<ReaderBookmark> bookmarks;

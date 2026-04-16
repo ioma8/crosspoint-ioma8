@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "RecentBooksStore.h"
+#include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "components/icons/cover.h"
 #include "fontIds.h"

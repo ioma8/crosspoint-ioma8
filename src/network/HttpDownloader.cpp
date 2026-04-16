@@ -11,7 +11,7 @@
 #include <memory>
 #include <utility>
 
-#include "CrossPointSettings.h"
+#include "app/CrossPointSettings.h"
 #include "util/UrlUtils.h"
 
 namespace {

@@ -577,9 +577,15 @@ def _append_string_entry(
 
 
 def _write_file(path: str, lines: List[str]) -> None:
+    content = "\n".join(lines) + "\n"
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as existing:
+            if existing.read() == content:
+                print(f"Unchanged: {path}")
+                return
+
     with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write("\n".join(lines))
-        f.write("\n")
+        f.write(content)
     print(f"Generated: {path}")
 
 

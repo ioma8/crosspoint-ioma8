@@ -8,8 +8,8 @@
 #include <Txt.h>
 #include <Xtc.h>
 
-#include "CrossPointSettings.h"
-#include "CrossPointState.h"
+#include "app/CrossPointSettings.h"
+#include "app/CrossPointState.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/Logo120.h"

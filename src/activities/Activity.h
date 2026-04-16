@@ -9,8 +9,8 @@
 #include "ActivityManager.h"  // for using the ActivityManager singleton
 #include "ActivityResult.h"
 #include "GfxRenderer.h"
-#include "MappedInputManager.h"
 #include "RenderLock.h"
+#include "app/MappedInputManager.h"
 
 class Activity {
   friend class ActivityManager;

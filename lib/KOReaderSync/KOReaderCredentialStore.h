@@ -2,17 +2,7 @@
 #include <cstdint>
 #include <string>
 
-// Document matching method for KOReader sync
-enum class DocumentMatchMethod : uint8_t {
-  FILENAME = 0,  // Match by filename (simpler, works across different file sources)
-  BINARY = 1,    // Match by partial MD5 of file content (more accurate, but files must be identical)
-};
-
-class KOReaderCredentialStore;
-namespace JsonSettingsIO {
-bool saveKOReader(const KOReaderCredentialStore& store, const char* path);
-bool loadKOReader(KOReaderCredentialStore& store, const char* json, bool* needsResave);
-}  // namespace JsonSettingsIO
+#include "KOReaderCredentialCodec.h"
 
 /**
  * Singleton class for storing KOReader sync credentials on the SD card.
@@ -32,9 +22,7 @@ class KOReaderCredentialStore {
   KOReaderCredentialStore() = default;
 
   bool loadFromBinaryFile();
-
-  friend bool JsonSettingsIO::saveKOReader(const KOReaderCredentialStore&, const char*);
-  friend bool JsonSettingsIO::loadKOReader(KOReaderCredentialStore&, const char*, bool*);
+  bool loadFromJson(const char* json, bool* needsResave);
 
  public:
   // Delete copy constructor and assignment

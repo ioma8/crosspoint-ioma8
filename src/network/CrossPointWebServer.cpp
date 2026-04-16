@@ -10,9 +10,9 @@
 
 #include <algorithm>
 
-#include "CrossPointSettings.h"
-#include "SettingsList.h"
 #include "WebDAVHandler.h"
+#include "app/CrossPointSettings.h"
+#include "app/SettingsList.h"
 #include "html/FilesPageHtml.generated.h"
 #include "html/HomePageHtml.generated.h"
 #include "html/SettingsPageHtml.generated.h"

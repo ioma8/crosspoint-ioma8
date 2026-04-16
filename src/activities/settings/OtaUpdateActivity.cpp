@@ -4,8 +4,8 @@
 #include <I18n.h>
 #include <WiFi.h>
 
-#include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "app/MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/OtaUpdater.h"

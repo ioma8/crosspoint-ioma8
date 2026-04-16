@@ -88,7 +88,8 @@ find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
 * **Standard**: C++20 (`-std=c++2a`). No Exceptions, No RTTI.
 * **Logging**: ALWAYS use `LOG_INF`, `LOG_DBG`, or `LOG_ERR` from `Logging.h`. Raw Serial output is deprecated.
 * **Environments** (in `platformio.ini`):
-  * `default`: Development (LOG_LEVEL=2, serial enabled)
+  * `default`: Standard local build (LOG_LEVEL=1, serial enabled)
+  * `debug`: Debug build (LOG_LEVEL=2, serial enabled)
   * `gh_release`: Production (LOG_LEVEL=0)
   * `gh_release_rc`: Release candidate (LOG_LEVEL=1)
   * `slim`: Minimal build (no serial logging)

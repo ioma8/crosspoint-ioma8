@@ -4,10 +4,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <MD5Builder.h>
-#include <ObfuscationUtils.h>
 #include <Serialization.h>
-
-#include "../../src/JsonSettingsIO.h"
 
 // Initialize the static instance
 KOReaderCredentialStore KOReaderCredentialStore::instance;
@@ -37,7 +34,10 @@ void legacyDeobfuscate(std::string& data) {
 
 bool KOReaderCredentialStore::saveToFile() const {
   FsHelpers::ensureCrossPointDataDir();
-  return JsonSettingsIO::saveKOReader(*this, KOREADER_FILE_JSON);
+
+  const KOReaderCredentialData data{username, password, serverUrl, matchMethod};
+  const std::string json = encodeKOReaderCredentials(data);
+  return Storage.writeFile(KOREADER_FILE_JSON, String(json.c_str()));
 }
 
 bool KOReaderCredentialStore::loadFromFile() {
@@ -46,7 +46,7 @@ bool KOReaderCredentialStore::loadFromFile() {
     String json = Storage.readFile(KOREADER_FILE_JSON);
     if (!json.isEmpty()) {
       bool resave = false;
-      bool result = JsonSettingsIO::loadKOReader(*this, json.c_str(), &resave);
+      bool result = loadFromJson(json.c_str(), &resave);
       if (result && resave) {
         saveToFile();
         LOG_DBG("KRS", "Resaved KOReader credentials to update format");
@@ -71,6 +71,21 @@ bool KOReaderCredentialStore::loadFromFile() {
 
   LOG_DBG("KRS", "No credentials file found");
   return false;
+}
+
+bool KOReaderCredentialStore::loadFromJson(const char* json, bool* needsResave) {
+  KOReaderCredentialData data;
+  if (!decodeKOReaderCredentials(json, data, needsResave)) {
+    return false;
+  }
+
+  username = std::move(data.username);
+  password = std::move(data.password);
+  serverUrl = std::move(data.serverUrl);
+  matchMethod = data.matchMethod;
+
+  LOG_DBG("KRS", "Loaded KOReader credentials for user: %s", username.c_str());
+  return true;
 }
 
 bool KOReaderCredentialStore::loadFromBinaryFile() {

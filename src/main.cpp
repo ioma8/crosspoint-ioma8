@@ -15,13 +15,13 @@
 
 #include <cstring>
 
-#include "CrossPointSettings.h"
-#include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "app/CrossPointSettings.h"
+#include "app/CrossPointState.h"
+#include "app/MappedInputManager.h"
+#include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/ButtonNavigator.h"
@@ -310,8 +310,10 @@ void setup() {
 }
 
 void loop() {
+#if defined(ENABLE_SERIAL_LOG) && LOG_LEVEL >= 2
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
+#endif
   static unsigned long lastMemPrint = 0;
 
   gpio.update();
@@ -385,6 +387,7 @@ void loop() {
     activityManager.requestUpdate();
   }
 
+#if defined(ENABLE_SERIAL_LOG) && LOG_LEVEL >= 2
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
@@ -396,6 +399,9 @@ void loop() {
       LOG_DBG("LOOP", "New max loop duration: %lu ms (activity: %lu ms)", maxLoopDuration, activityDuration);
     }
   }
+#else
+  activityManager.loop();
+#endif
 
   // Add delay at the end of the loop to prevent tight spinning
   // When an activity requests skip loop delay (e.g., webserver running), use yield() for faster response

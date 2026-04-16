@@ -56,14 +56,14 @@ Some flows use `src/activities/ActivityWithSubactivity.h` to host nested activit
 Top-level activity groups:
 
 - `src/activities/home/`: home and library navigation
-- `src/activities/reader/`: EPUB/XTC/TXT reading flows
+- `src/activities/reader/`: reading UI flows, split by format plus shared reader controllers/helpers
 - `src/activities/settings/`: settings menus and configuration
 - `src/activities/network/`: WiFi selection, AP/STA mode, file transfer server
 - `src/activities/boot_sleep/`: boot and sleep transitions
 
 ## Reader and content pipeline
 
-Reader orchestration starts in `src/activities/reader/ReaderActivity.h` and dispatches to format-specific readers.
+Reader orchestration starts in `src/activities/reader/shared/ReaderActivity.h` and dispatches to format-specific readers.
 EPUB processing is implemented in `lib/Epub/`.
 
 ```mermaid
@@ -129,8 +129,8 @@ Notes:
 
 Two singletons are central:
 
-- `src/CrossPointSettings.h` (`SETTINGS`): user preferences and behavior flags
-- `src/CrossPointState.h` (`APP_STATE`): runtime/session state such as current book and sleep context
+- `src/app/CrossPointSettings.h` (`SETTINGS`): user preferences and behavior flags
+- `src/app/CrossPointState.h` (`APP_STATE`): runtime/session state such as current book and sleep context
 
 Typical persisted areas on SD:
 
@@ -176,9 +176,12 @@ When editing related source assets, regenerate via normal build steps/scripts.
 
 ## Key directories
 
-- `src/`: app orchestration, settings/state, and activity implementations
+- `src/app/`: app-level settings, state, input mapping, and shared settings metadata
+- `src/activities/`: screen controllers, including reader format folders under `src/activities/reader/`
 - `src/network/`: web server and OTA/update networking
 - `src/components/`: theming and shared UI components
+- `src/app/persistence/`: JSON persistence for app state, settings, Wi-Fi credentials, and recent books
+- `lib/ReaderCore/`: reader persistence/model helpers shared by EPUB/PDF/TXT/XTC activities
 - `lib/Epub/`: EPUB parser, layout, CSS handling, and hyphenation
 - `lib/`: supporting libraries (fonts, text, filesystem helpers, etc.)
 - `open-x4-sdk/`: vendored hardware SDK (display, input, storage, battery)

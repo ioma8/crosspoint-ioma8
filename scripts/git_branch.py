@@ -56,7 +56,7 @@ def get_base_version(project_dir):
 
 def inject_version(env):
     pio_env = env['PIOENV']
-    if pio_env not in ('default', 'gh_release'):
+    if pio_env not in ('default', 'debug', 'gh_release'):
         return
 
     project_dir = env['PROJECT_DIR']

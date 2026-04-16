@@ -4,7 +4,7 @@
 #include <string>
 
 #include "../Activity.h"
-#include "MappedInputManager.h"
+#include "app/MappedInputManager.h"
 
 class BmpViewerActivity final : public Activity {
  public:

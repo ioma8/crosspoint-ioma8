@@ -3,7 +3,7 @@
 #include <functional>
 #include <memory>
 
-#include "CrossPointSettings.h"
+#include "app/CrossPointSettings.h"
 #include "components/themes/BaseTheme.h"
 
 class UITheme {

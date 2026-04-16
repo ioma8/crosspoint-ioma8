@@ -7,9 +7,9 @@
 #include <OpdsStream.h>
 #include <WiFi.h>
 
-#include "CrossPointSettings.h"
-#include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "app/CrossPointSettings.h"
+#include "app/MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"

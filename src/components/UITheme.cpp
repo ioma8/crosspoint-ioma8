@@ -6,8 +6,8 @@
 
 #include <memory>
 
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
+#include "app/MappedInputManager.h"
+#include "app/RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"

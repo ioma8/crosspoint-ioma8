@@ -2,7 +2,7 @@
 
 #include <I18n.h>
 
-#include "MappedInputManager.h"
+#include "app/MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 

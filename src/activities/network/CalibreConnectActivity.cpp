@@ -6,8 +6,8 @@
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 
-#include "MappedInputManager.h"
 #include "WifiSelectionActivity.h"
+#include "app/MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 

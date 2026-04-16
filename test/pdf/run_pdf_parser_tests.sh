@@ -22,7 +22,7 @@ INCLUDES=(
   -I "lib/Serialization"
   -I "lib/Pdf"
   -I "lib/Pdf/Pdf"
-  -I "src/activities/reader"
+  -I "lib/ReaderCore"
   -I "lib/InflateReader"
   -I "lib/uzlib/src"
 )
