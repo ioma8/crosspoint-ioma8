@@ -12,6 +12,7 @@ class PdfReaderMenuActivity final : public Activity {
  public:
   static constexpr int ACTION_OUTLINE = 200;
   static constexpr int ACTION_HOME = 201;
+  static constexpr int ACTION_BOOKMARKS = 202;
 
   PdfReaderMenuActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool hasOutline);
 

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "CrossPointSettings.h"
+#include "ReaderBookmarkCodec.h"
 #include "activities/Activity.h"
 
 class TxtReaderActivity final : public Activity {
@@ -17,9 +18,11 @@ class TxtReaderActivity final : public Activity {
   // Streaming text reader - stores file offsets for each page
   std::vector<size_t> pageOffsets;  // File offset for start of each page
   std::vector<std::string> currentPageLines;
+  std::vector<ReaderBookmark> bookmarks;
   int linesPerPage = 0;
   int viewportWidth = 0;
   bool initialized = false;
+  bool bookmarkChordActive = false;
 
   // Cached settings for cache validation (different fonts/margins require re-indexing)
   int cachedFontId = 0;
@@ -40,6 +43,12 @@ class TxtReaderActivity final : public Activity {
   void savePageIndexCache() const;
   void saveProgress() const;
   void loadProgress();
+  void toggleCurrentBookmark();
+  void openBookmarkSelection();
+  bool isCurrentPageBookmarked() const;
+  uint8_t getCurrentBookProgressPercent() const;
+  std::string getCurrentPageSnippet();
+  void drawBookmarkIndicatorIfNeeded();
 
  public:
   explicit TxtReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Txt> txt)

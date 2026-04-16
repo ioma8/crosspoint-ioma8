@@ -16,6 +16,9 @@
 #include "MappedInputManager.h"
 #include "PdfReaderChapterSelectionActivity.h"
 #include "PdfReaderMenuActivity.h"
+#include "ReaderBookmarkIndicator.h"
+#include "ReaderBookmarkSelectionActivity.h"
+#include "ReaderBookmarkStore.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -304,6 +307,7 @@ void PdfReaderActivity::onEnter() {
   pageReader.close();
 
   totalPages = pdf->pageCount();
+  ReaderBookmarkStore::load(std::string(pdf->cacheDirectory().c_str()), bookmarks);
   currentPage = 0;
   if (pdf->loadProgress(currentPage) && currentPage >= totalPages && totalPages > 0) {
     currentPage = totalPages - 1;
@@ -330,6 +334,7 @@ void PdfReaderActivity::onExit() {
   lastSavedPage = UINT32_MAX;
   pageReader.close();
   pdf.reset();
+  bookmarks.clear();
   layoutReady = false;
 }
 
@@ -345,6 +350,10 @@ void PdfReaderActivity::saveProgressNow() {
 void PdfReaderActivity::loop() {
   if (!pdf) {
     finish();
+    return;
+  }
+
+  if (ReaderUtils::handleBookmarkChord(mappedInput, bookmarkChordActive, [this] { toggleCurrentBookmark(); })) {
     return;
   }
 
@@ -372,6 +381,8 @@ void PdfReaderActivity::loop() {
                              if (menu.action == PdfReaderMenuActivity::ACTION_HOME) {
                                saveProgressNow();
                                onGoHome();
+                             } else if (menu.action == PdfReaderMenuActivity::ACTION_BOOKMARKS) {
+                               openBookmarkSelection();
                              } else if (menu.action == PdfReaderMenuActivity::ACTION_OUTLINE) {
                                startActivityForResult(std::make_unique<PdfReaderChapterSelectionActivity>(
                                                           renderer, mappedInput, pdf->outline(), currentPage),
@@ -420,6 +431,72 @@ void PdfReaderActivity::loop() {
   }
 }
 
+uint8_t PdfReaderActivity::getCurrentBookProgressPercent() const {
+  if (totalPages == 0) {
+    return 0;
+  }
+  const uint32_t percent = ((currentPage + 1) * 100U) / totalPages;
+  return static_cast<uint8_t>(std::min<uint32_t>(percent, 100));
+}
+
+std::string PdfReaderActivity::getCurrentPageSnippet() {
+  if (loadedPage != currentPage || pageSliceStarts.empty()) {
+    if (!loadPage(currentPage)) {
+      return "";
+    }
+  }
+
+  std::string text;
+  for (uint32_t i = 0; i < pageReader.textCount(); ++i) {
+    PdfTextBlock block;
+    if (!pageReader.loadTextBlock(i, block) || block.text.empty()) {
+      continue;
+    }
+    if (!text.empty()) {
+      text.push_back(' ');
+    }
+    text += block.text.c_str();
+    if (text.size() > 160) {
+      break;
+    }
+  }
+  return ReaderBookmarkCodec::firstWords(text);
+}
+
+void PdfReaderActivity::toggleCurrentBookmark() {
+  if (!pdf || totalPages == 0 || currentPage >= totalPages) {
+    return;
+  }
+
+  const ReaderBookmark bookmark{currentPage, 0, getCurrentBookProgressPercent(), getCurrentPageSnippet()};
+  if (ReaderBookmarkStore::toggle(std::string(pdf->cacheDirectory().c_str()), bookmark)) {
+    ReaderBookmarkStore::load(std::string(pdf->cacheDirectory().c_str()), bookmarks);
+    requestUpdate();
+  }
+}
+
+bool PdfReaderActivity::isCurrentPageBookmarked() const {
+  return ReaderBookmarkCodec::find(bookmarks, currentPage, 0) != nullptr;
+}
+
+void PdfReaderActivity::openBookmarkSelection() {
+  std::vector<ReaderBookmark> latestBookmarks;
+  ReaderBookmarkStore::load(std::string(pdf->cacheDirectory().c_str()), latestBookmarks);
+  bookmarks = latestBookmarks;
+  startActivityForResult(std::make_unique<ReaderBookmarkSelectionActivity>(renderer, mappedInput, latestBookmarks),
+                         [this](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             jumpToPage(std::get<BookmarkResult>(result.data).primary);
+                           }
+                         });
+}
+
+void PdfReaderActivity::drawBookmarkIndicatorIfNeeded() {
+  if (isCurrentPageBookmarked()) {
+    ReaderBookmarkIndicator::draw(renderer);
+  }
+}
+
 void PdfReaderActivity::renderStatusBar() const {
   if (!pdf || totalPages == 0) {
     return;
@@ -460,12 +537,14 @@ void PdfReaderActivity::render(RenderLock&&) {
   }
 
   renderContents(pageReader);
+  drawBookmarkIndicatorIfNeeded();
   renderStatusBar();
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
   if (SETTINGS.textAntiAliasing) {
     ReaderUtils::renderAntiAliased(renderer, [&, this]() {
       renderContents(pageReader);
+      drawBookmarkIndicatorIfNeeded();
       renderStatusBar();
     });
   }

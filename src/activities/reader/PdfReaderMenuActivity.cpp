@@ -13,6 +13,8 @@ PdfReaderMenuActivity::PdfReaderMenuActivity(GfxRenderer& renderer, MappedInputM
     labels.push_back(std::string(tr(STR_PDF_OUTLINE)));
     actions.push_back(ACTION_OUTLINE);
   }
+  labels.push_back(std::string(tr(STR_BOOKMARKS)));
+  actions.push_back(ACTION_BOOKMARKS);
   labels.push_back(std::string(tr(STR_GO_HOME_BUTTON)));
   actions.push_back(ACTION_HOME);
 }
