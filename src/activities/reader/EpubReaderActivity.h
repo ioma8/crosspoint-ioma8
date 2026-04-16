@@ -4,6 +4,7 @@
 #include <Epub/Section.h>
 
 #include "EpubReaderMenuActivity.h"
+#include "ReaderBookmarkCodec.h"
 #include "activities/Activity.h"
 
 class EpubReaderActivity final : public Activity {
@@ -27,12 +28,14 @@ class EpubReaderActivity final : public Activity {
   bool pendingScreenshot = false;
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
+  bool bookmarkChordActive = false;
   uint8_t fontPrewarmSuppressPages = 0;
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int pageLoadRetrySpineIndex = -1;
   int pageLoadRetryPage = -1;
   bool pageLoadRetryUsed = false;
+  std::vector<ReaderBookmark> bookmarks;
 
   // Footnote support
   std::vector<FootnoteEntry> currentPageFootnotes;
@@ -57,6 +60,12 @@ class EpubReaderActivity final : public Activity {
   void pageTurn(bool isForwardTurn);
   bool consumePageLoadRetry(int spineIndex, int pageNumber);
   void resetPageLoadRetry();
+  void toggleCurrentBookmark();
+  void openBookmarkSelection();
+  bool isCurrentPageBookmarked() const;
+  uint8_t getCurrentBookProgressPercent() const;
+  std::string getCurrentPageSnippet();
+  void drawBookmarkIndicatorIfNeeded();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);

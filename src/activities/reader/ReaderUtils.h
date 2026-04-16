@@ -49,6 +49,28 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input) {
   return {prev, next};
 }
 
+template <typename ToggleFn>
+bool handleBookmarkChord(const MappedInputManager& input, bool& chordActive, const ToggleFn& toggleBookmark) {
+  const bool downPressed = input.isPressed(MappedInputManager::Button::Down);
+  const bool rightPressed = input.isPressed(MappedInputManager::Button::Right);
+
+  if (chordActive) {
+    if (!downPressed && !rightPressed) {
+      chordActive = false;
+    }
+    return true;
+  }
+
+  if (downPressed && rightPressed &&
+      (input.wasPressed(MappedInputManager::Button::Down) || input.wasPressed(MappedInputManager::Button::Right))) {
+    chordActive = true;
+    toggleBookmark();
+    return true;
+  }
+
+  return false;
+}
+
 inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh) {
   if (pagesUntilFullRefresh <= 1) {
     renderer.displayBuffer(HalDisplay::HALF_REFRESH);

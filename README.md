@@ -11,6 +11,7 @@ It keeps the open firmware foundation and adds a practical PDF reading path for 
 - Cached PDF loading to reduce repeated parsing
 - PDF reader stability improvements for large and complex documents
 - EPUB reading optimizations for faster, more reliable rendering and navigation
+- Reader bookmarks for EPUB, PDF, and TXT, saved on the SD card next to each book cache
 
 ## Other Features of CrossPoint
 
@@ -26,6 +27,14 @@ Host-side parser checks can be run with:
 ```sh
 bash test/pdf/run_pdf_parser_tests.sh
 ```
+
+### Bookmarks
+
+Bookmarks are available while reading EPUB, PDF, and TXT files. Press `Down` and `Right` together to toggle a bookmark
+on the current page. A bookmarked page shows a small marker in the top-right corner.
+
+EPUB and PDF bookmarks are listed from the reader menu under `Bookmarks`. TXT opens the bookmark list with the confirm
+button. Each bookmark stores the page position, approximate percentage, and the first words from that page.
 
 ## Installation
 

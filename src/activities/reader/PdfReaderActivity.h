@@ -2,9 +2,12 @@
 
 #include <Pdf.h>
 
+#include <vector>
+
 #include "../Activity.h"
 #include "Pdf/PdfCachedPageReader.h"
 #include "PdfPageNavigation.h"
+#include "ReaderBookmarkCodec.h"
 
 class PdfReaderActivity final : public Activity {
   struct PdfRenderCursor {
@@ -30,6 +33,8 @@ class PdfReaderActivity final : public Activity {
   int marginRight = 0;
   int marginBottom = 0;
   bool layoutReady = false;
+  bool bookmarkChordActive = false;
+  std::vector<ReaderBookmark> bookmarks;
 
   void ensureLayout();
   bool renderPageSlice(PdfCachedPageReader& page, const PdfRenderCursor& start, PdfRenderCursor& next, bool draw);
@@ -40,6 +45,12 @@ class PdfReaderActivity final : public Activity {
   void saveProgressNow();
   void drawPdfImagePlaceholder(int y) const;
   bool renderPdfImage(const PdfImageDescriptor& img, int y, int bottomLimit);
+  void toggleCurrentBookmark();
+  void openBookmarkSelection();
+  bool isCurrentPageBookmarked() const;
+  uint8_t getCurrentBookProgressPercent() const;
+  std::string getCurrentPageSnippet();
+  void drawBookmarkIndicatorIfNeeded();
 
  public:
   explicit PdfReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Pdf> pdf);

@@ -10,6 +10,9 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "MappedInputManager.h"
+#include "ReaderBookmarkIndicator.h"
+#include "ReaderBookmarkSelectionActivity.h"
+#include "ReaderBookmarkStore.h"
 #include "ReaderUtils.h"
 #include "RecentBooksStore.h"
 #include "components/UITheme.h"
@@ -32,6 +35,7 @@ void TxtReaderActivity::onEnter() {
   ReaderUtils::applyOrientation(renderer, SETTINGS.orientation);
 
   txt->setupCacheDir();
+  ReaderBookmarkStore::load(txt->getCachePath(), bookmarks);
 
   // Save current txt as last opened file and add to recent books
   auto filePath = txt->getPath();
@@ -52,12 +56,22 @@ void TxtReaderActivity::onExit() {
 
   pageOffsets.clear();
   currentPageLines.clear();
+  bookmarks.clear();
   APP_STATE.readerActivityLoadCount = 0;
   APP_STATE.saveToFile();
   txt.reset();
 }
 
 void TxtReaderActivity::loop() {
+  if (ReaderUtils::handleBookmarkChord(mappedInput, bookmarkChordActive, [this] { toggleCurrentBookmark(); })) {
+    return;
+  }
+
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    openBookmarkSelection();
+    return;
+  }
+
   // Long press BACK (1s+) goes to file selection
   if (mappedInput.isPressed(MappedInputManager::Button::Back) && mappedInput.getHeldTime() >= ReaderUtils::GO_HOME_MS) {
     activityManager.goToFileBrowser(txt ? txt->getPath() : "");
@@ -326,6 +340,89 @@ void TxtReaderActivity::render(RenderLock&&) {
   saveProgress();
 }
 
+uint8_t TxtReaderActivity::getCurrentBookProgressPercent() const {
+  if (totalPages <= 0) {
+    return 0;
+  }
+  const int percent = ((currentPage + 1) * 100) / totalPages;
+  return static_cast<uint8_t>(std::min(percent, 100));
+}
+
+std::string TxtReaderActivity::getCurrentPageSnippet() {
+  if (!initialized) {
+    initializeReader();
+  }
+  if (currentPage < 0 || currentPage >= totalPages || pageOffsets.empty()) {
+    return "";
+  }
+
+  if (currentPageLines.empty()) {
+    size_t nextOffset = 0;
+    loadPageAtOffset(pageOffsets[static_cast<size_t>(currentPage)], currentPageLines, nextOffset);
+  }
+
+  std::string text;
+  for (const auto& line : currentPageLines) {
+    if (line.empty()) {
+      continue;
+    }
+    if (!text.empty()) {
+      text.push_back(' ');
+    }
+    text += line;
+    if (text.size() > 160) {
+      break;
+    }
+  }
+  return ReaderBookmarkCodec::firstWords(text);
+}
+
+void TxtReaderActivity::toggleCurrentBookmark() {
+  if (!txt) {
+    return;
+  }
+  if (!initialized) {
+    initializeReader();
+  }
+  if (currentPage < 0 || currentPage >= totalPages) {
+    return;
+  }
+
+  const ReaderBookmark bookmark{static_cast<uint32_t>(currentPage), 0, getCurrentBookProgressPercent(),
+                                getCurrentPageSnippet()};
+  if (ReaderBookmarkStore::toggle(txt->getCachePath(), bookmark)) {
+    ReaderBookmarkStore::load(txt->getCachePath(), bookmarks);
+    requestUpdate();
+  }
+}
+
+bool TxtReaderActivity::isCurrentPageBookmarked() const {
+  return ReaderBookmarkCodec::find(bookmarks, static_cast<uint32_t>(currentPage), 0) != nullptr;
+}
+
+void TxtReaderActivity::openBookmarkSelection() {
+  if (!txt) {
+    return;
+  }
+  std::vector<ReaderBookmark> latestBookmarks;
+  ReaderBookmarkStore::load(txt->getCachePath(), latestBookmarks);
+  bookmarks = latestBookmarks;
+  startActivityForResult(std::make_unique<ReaderBookmarkSelectionActivity>(renderer, mappedInput, latestBookmarks),
+                         [this](const ActivityResult& result) {
+                           if (!result.isCancelled) {
+                             const auto& bookmark = std::get<BookmarkResult>(result.data);
+                             currentPage = static_cast<int>(bookmark.primary);
+                             requestUpdate();
+                           }
+                         });
+}
+
+void TxtReaderActivity::drawBookmarkIndicatorIfNeeded() {
+  if (isCurrentPageBookmarked()) {
+    ReaderBookmarkIndicator::draw(renderer);
+  }
+}
+
 void TxtReaderActivity::renderPage() {
   const int lineHeight = renderer.getLineHeight(cachedFontId);
   const int contentWidth = viewportWidth;
@@ -373,12 +470,16 @@ void TxtReaderActivity::renderPage() {
 
   // BW rendering
   renderLines();
+  drawBookmarkIndicatorIfNeeded();
   renderStatusBar();
 
   ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
 
   if (SETTINGS.textAntiAliasing) {
-    ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
+    ReaderUtils::renderAntiAliased(renderer, [this, &renderLines]() {
+      renderLines();
+      drawBookmarkIndicatorIfNeeded();
+    });
   }
   // scope destructor clears font cache via FontCacheManager
 }
