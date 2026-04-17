@@ -3,6 +3,7 @@
 #include <HalStorage.h>
 
 #include <cstddef>
+#include <memory>
 
 #include "Pdf/PageTree.h"
 #include "Pdf/PdfCache.h"
@@ -47,16 +48,16 @@ class Pdf {
  private:
   bool parseFromSource(bool needsOutlines);
   bool ensureXrefReady();
+  void releaseXref();
   bool computeSourceSignature(SourceSignature& outSignature);
   bool persistCacheMetaIfNeeded();
 
   PdfFixedString<PDF_MAX_PATH> path_;
   FsFile file_;
-  XrefTable xref_;
+  std::unique_ptr<XrefTable> xref_;
   PageTree pageTree_;
   PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES> outlineEntries_;
   PdfCache cache_;
-  PdfByteBuffer streamScratch_;
   PdfFixedVector<uint32_t, PDF_MAX_PAGES> cachedPageObjectIds_;
   SourceSignature cachedSourceSignature_;
   uint32_t pages_ = 0;

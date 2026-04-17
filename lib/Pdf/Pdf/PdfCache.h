@@ -4,6 +4,7 @@
 #include "PdfLimits.h"
 #include "PdfOutline.h"
 #include "PdfPage.h"
+#include "XrefTable.h"
 
 class PdfCache {
   PdfFixedString<PDF_MAX_PATH> cacheDir;
@@ -22,6 +23,8 @@ class PdfCache {
                 uint32_t signatureHead = 0, uint32_t signatureTail = 0);
   bool loadPage(uint32_t pageNum, PdfPage& outPage);
   bool savePage(uint32_t pageNum, const PdfPage& page);
+  bool loadXref(XrefTable& xref);
+  bool saveXref(const XrefTable& xref);
   bool loadProgress(uint32_t& currentPage);
   bool saveProgress(uint32_t currentPage);
   void invalidate();

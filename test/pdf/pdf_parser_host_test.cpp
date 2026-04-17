@@ -21,6 +21,7 @@
 
 #include "ContentStream.h"
 #include "PageTree.h"
+#include "PdfCache.h"
 #include "PdfCachedPageReader.h"
 #include "PdfObject.h"
 #include "PdfOutline.h"
@@ -597,7 +598,7 @@ void testInflateReaderLongWindowStreaming() {
   REQUIRE(std::memcmp(out.data(), plain.data(), plainLen) == 0);
   REQUIRE(InflateReader::retainedSharedBufferBytes() == 32768);
   ctx.reader.deinit();
-  REQUIRE(InflateReader::retainedSharedBufferBytes() == 32768);
+  REQUIRE(InflateReader::retainedSharedBufferBytes() == 0);
   InflateReader::releaseSharedBuffer();
   REQUIRE(InflateReader::retainedSharedBufferBytes() == 0);
 }
@@ -864,10 +865,41 @@ void testEsp32DatasheetParseAllocationBudget() {
   }
   const AllocationStats stats = allocationStats();
   REQUIRE(stats.bytes < 800000);
-  REQUIRE(stats.calls < 1200);
-  REQUIRE(PdfScratch::retainedBufferBytes() > 0);
+  REQUIRE(stats.calls < 420);
+  REQUIRE(PdfScratch::retainedBufferBytes() == 0);
   PdfScratch::releaseRetainedBuffers();
   REQUIRE(PdfScratch::retainedBufferBytes() == 0);
+}
+
+void testPdfCachePersistsXrefTable() {
+  HalFile file;
+  REQUIRE(file.loadPath("test/pdf/esp32-c6_datasheet_en.pdf"));
+
+  XrefTable xref;
+  REQUIRE(xref.parse(file));
+  REQUIRE(xref.objectStreamIdForObject(xref.rootObjId()) != 0);
+
+  PdfCache cache("test/pdf/esp32-c6_datasheet_en.pdf");
+  cache.configure("test/pdf/esp32-c6_datasheet_en.pdf", file.fileSize());
+  cache.invalidate();
+  REQUIRE(cache.saveXref(xref));
+
+  XrefTable loaded;
+  REQUIRE(cache.loadXref(loaded));
+  REQUIRE(loaded.rootObjId() == xref.rootObjId());
+  REQUIRE(loaded.objectCount() == xref.objectCount());
+  REQUIRE(loaded.objectStreamIdForObject(loaded.rootObjId()) == xref.objectStreamIdForObject(xref.rootObjId()));
+  REQUIRE(loaded.getOffset(loaded.objectStreamIdForObject(loaded.rootObjId())) != 0);
+
+  file.seek(0);
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
+  REQUIRE(loaded.readDictForObject(file, loaded.rootObjId(), catalogBody));
+  const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody.view());
+  REQUIRE(pagesObjId != 0);
+
+  PageTree pageTree;
+  REQUIRE(pageTree.parse(file, loaded, pagesObjId));
+  REQUIRE(pageTree.pageCount() >= 20);
 }
 
 bool runOnePdf(const char* path) {
@@ -1057,6 +1089,7 @@ int main(int argc, char** argv) {
   testPreviewMatchesPdftotext();
   testFirstPageReadableTextMatchesExpectedPreviews();
   testEsp32DatasheetParseAllocationBudget();
+  testPdfCachePersistsXrefTable();
   std::vector<const char*> paths;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) paths.push_back(argv[i]);

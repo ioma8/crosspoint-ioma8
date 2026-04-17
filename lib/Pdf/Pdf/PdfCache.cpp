@@ -11,6 +11,8 @@
 namespace {
 
 constexpr uint8_t kMetaVersion = 4;
+constexpr uint8_t kXrefVersion = 1;
+constexpr uint32_t kXrefMagic = 0x52585043UL;  // CPXR little-endian
 constexpr size_t kFileHashChunkSize = 64;
 constexpr uint8_t kPageVersionV1 = 1;
 constexpr uint8_t kPageVersionV2 = 2;
@@ -64,15 +66,6 @@ bool readFixedString(FsFile& f, PdfFixedString<N>& s) {
   }
   s.data()[len] = '\0';
   return true;
-}
-
-uint32_t hashBytes(const uint8_t* data, size_t len) {
-  uint32_t h = 2166136261u;
-  for (size_t i = 0; i < len; ++i) {
-    h ^= static_cast<uint32_t>(data[i]);
-    h *= 16777619u;
-  }
-  return h;
 }
 
 template <size_t N>
@@ -401,6 +394,85 @@ bool PdfCache::savePage(uint32_t pageNum, const PdfPage& page) {
       const uint8_t im = page.drawOrder[i].isImage ? uint8_t{1} : uint8_t{0};
       serialization::writePod(f, im);
       serialization::writePod(f, page.drawOrder[i].index);
+    }
+    return true;
+  });
+}
+
+bool PdfCache::loadXref(XrefTable& xref) {
+  PdfFixedString<PDF_MAX_PATH> path = cacheDir;
+  if (!path.append("/xref.bin", 9)) {
+    return false;
+  }
+  FsFile f;
+  if (!Storage.openFileForRead("PDF", path.c_str(), f)) {
+    return false;
+  }
+
+  uint32_t magic = 0;
+  uint8_t version = 0;
+  uint32_t objectCount = 0;
+  uint32_t rootObjId = 0;
+  serialization::readPod(f, magic);
+  serialization::readPod(f, version);
+  serialization::readPod(f, objectCount);
+  serialization::readPod(f, rootObjId);
+  if (magic != kXrefMagic || version != kXrefVersion || objectCount > PDF_MAX_OBJECTS || rootObjId == 0) {
+    f.close();
+    return false;
+  }
+  constexpr size_t kHeaderBytes = sizeof(uint32_t) + sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t);
+  constexpr size_t kEntryBytes = sizeof(uint32_t) + sizeof(uint16_t);
+  if (f.fileSize() != kHeaderBytes + static_cast<size_t>(objectCount) * kEntryBytes) {
+    f.close();
+    return false;
+  }
+
+  if (!xref.resetToCached(rootObjId, objectCount)) {
+    f.close();
+    return false;
+  }
+  for (uint32_t objId = 0; objId < objectCount; ++objId) {
+    uint32_t off = 0;
+    uint16_t objectStreamId = 0;
+    serialization::readPod(f, off);
+    serialization::readPod(f, objectStreamId);
+    if (off != 0) {
+      if (!xref.setOffset(objId, off)) {
+        f.close();
+        return false;
+      }
+    } else if (objectStreamId != 0) {
+      if (!xref.setObjectStreamForObject(objId, objectStreamId)) {
+        f.close();
+        return false;
+      }
+    }
+  }
+  f.close();
+  return true;
+}
+
+bool PdfCache::saveXref(const XrefTable& xref) {
+  const uint32_t objectCount = xref.objectCount();
+  if (objectCount == 0 || objectCount > PDF_MAX_OBJECTS || xref.rootObjId() == 0) {
+    return false;
+  }
+  Storage.ensureDirectoryExists(cacheDir.c_str());
+  PdfFixedString<PDF_MAX_PATH> path = cacheDir;
+  if (!path.append("/xref.bin", 9)) {
+    return false;
+  }
+  return saveAtomic("PDF", path, ".tmp", [&](FsFile& f) {
+    serialization::writePod(f, kXrefMagic);
+    serialization::writePod(f, kXrefVersion);
+    serialization::writePod(f, objectCount);
+    serialization::writePod(f, xref.rootObjId());
+    for (uint32_t objId = 0; objId < objectCount; ++objId) {
+      const uint32_t off = xref.getOffset(objId);
+      const uint16_t objectStreamId = static_cast<uint16_t>(xref.objectStreamIdForObject(objId));
+      serialization::writePod(f, off);
+      serialization::writePod(f, objectStreamId);
     }
     return true;
   });

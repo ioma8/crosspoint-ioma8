@@ -46,6 +46,8 @@ void InflateReader::deinit() {
   if (ringBuffer) {
     if (usingSharedRingBuffer) {
       g_inflateDictInUse = false;
+      free(g_inflateDict);
+      g_inflateDict = nullptr;
     }
     ringBuffer = nullptr;
   }

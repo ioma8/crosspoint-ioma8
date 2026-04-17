@@ -33,15 +33,6 @@ size_t findStartXref(const uint8_t* buf, size_t len) {
   return SIZE_MAX;
 }
 
-void rebuildObjStmContainerList(uint16_t* ids, uint16_t& count, const uint8_t* bits) {
-  count = 0;
-  for (uint32_t objId = 0; objId < PDF_MAX_OBJECTS; ++objId) {
-    if ((bits[objId >> 3U] & static_cast<uint8_t>(1U << (objId & 7U))) != 0U) {
-      ids[count++] = static_cast<uint16_t>(objId);
-    }
-  }
-}
-
 bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\0'; }
 
 void skipWs(const char*& p) {
@@ -189,6 +180,18 @@ bool splitObjStmObjectSlice(std::string_view slice, PdfFixedString<PDF_INLINE_DI
   return !dictOut.empty();
 }
 
+std::string_view trimObjStmSlice(std::string_view slice) {
+  while (!slice.empty() &&
+         (slice.front() == ' ' || slice.front() == '\t' || slice.front() == '\r' || slice.front() == '\n')) {
+    slice.remove_prefix(1);
+  }
+  while (!slice.empty() &&
+         (slice.back() == ' ' || slice.back() == '\t' || slice.back() == '\r' || slice.back() == '\n')) {
+    slice.remove_suffix(1);
+  }
+  return slice;
+}
+
 struct ObjStmDecodeAccum {
   std::vector<uint8_t> bytes;
 };
@@ -227,31 +230,6 @@ struct ObjStmDecodeAccum {
   return true;
 }
 
-bool scanObjStmHeaderFromBytes(const uint8_t* bytes, size_t len, size_t first, int nObj, uint32_t targetObjId,
-                               uint32_t& targetRel, uint32_t& nextRel) {
-  if (!bytes || len <= first || nObj <= 0) {
-    return false;
-  }
-  targetRel = 0;
-  nextRel = UINT32_MAX;
-  bool targetFound = false;
-  size_t pos = 0;
-  for (int i = 0; i < nObj; ++i) {
-    uint32_t objId = 0;
-    uint32_t rel = 0;
-    if (!parseObjStmPairToken(bytes, len, first, pos, objId) || !parseObjStmPairToken(bytes, len, first, pos, rel)) {
-      return false;
-    }
-    if (objId == targetObjId) {
-      targetFound = true;
-      targetRel = rel;
-    } else if (targetFound && rel > targetRel && rel < nextRel) {
-      nextRel = rel;
-    }
-  }
-  return targetFound;
-}
-
 [[maybe_unused]] bool readObjStmUnsignedToken(FsFile& file, size_t limit, uint32_t& out) {
   out = 0;
   bool haveDigit = false;
@@ -270,30 +248,6 @@ bool scanObjStmHeaderFromBytes(const uint8_t* bytes, size_t len, size_t first, i
     }
   }
   return haveDigit;
-}
-
-[[maybe_unused]] bool scanObjStmHeaderForTargetAndNext(FsFile& file, size_t first, int nObj, uint32_t targetObjId,
-                                                       uint32_t& targetRel, uint32_t& nextRel) {
-  if (!file.seek(first)) {
-    return false;
-  }
-  targetRel = 0;
-  nextRel = UINT32_MAX;
-  bool targetFound = false;
-  for (int i = 0; i < nObj; ++i) {
-    uint32_t oid = 0;
-    uint32_t rel = 0;
-    if (!readObjStmUnsignedToken(file, first, oid) || !readObjStmUnsignedToken(file, first, rel)) {
-      return false;
-    }
-    if (oid == targetObjId) {
-      targetFound = true;
-      targetRel = rel;
-    } else if (targetFound && rel > targetRel && rel < nextRel) {
-      nextRel = rel;
-    }
-  }
-  return targetFound;
 }
 
 struct StreamToFileCtx {
@@ -547,10 +501,7 @@ struct XrefStreamDecodeState {
   size_t recBytes = 0;
   uint8_t rowBuf[32]{};
   size_t rowPos = 0;
-  uint8_t objStmBits[(PDF_MAX_OBJECTS + 7) / 8]{};
 };
-
-void setBit(uint8_t* bits, uint32_t id) { bits[id >> 3U] |= static_cast<uint8_t>(1U << (id & 7U)); }
 
 bool takeXrefStreamChunk(void* ctx, const uint8_t* data, size_t len) {
   auto* s = static_cast<XrefStreamDecodeState*>(ctx);
@@ -579,7 +530,7 @@ bool takeXrefStreamChunk(void* ctx, const uint8_t* data, size_t len) {
     if (objId >= PDF_MAX_OBJECTS) {
       return false;
     }
-    uint32_t ft = 0;
+    uint32_t ft = 1;
     if (s->w0 >= 1) {
       ft = s->rowBuf[0];
     }
@@ -606,7 +557,9 @@ bool takeXrefStreamChunk(void* ctx, const uint8_t* data, size_t len) {
         stmObj = readBe24(f1b);
       }
       if (stmObj < PDF_MAX_OBJECTS) {
-        setBit(s->objStmBits, stmObj);
+        if (!s->xref->setObjectStreamForObject(objId, stmObj)) {
+          return false;
+        }
       }
     } else if (ft == 0) {
       if (!s->xref->setOffset(objId, 0)) {
@@ -682,6 +635,8 @@ bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xref
   }
 
   std::memset(offsets_, 0, sizeof(offsets_));
+  std::memset(objStmContainers_, 0, sizeof(objStmContainers_));
+  std::memset(objStreamIdByObjectId_, 0, sizeof(objStreamIdByObjectId_));
   offsetCount_ = static_cast<uint32_t>(size);
 
   XrefStreamDecodeState st{};
@@ -744,9 +699,6 @@ bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xref
     pdfLogErr("xref: xref stream decode failed");
     return false;
   }
-
-  std::memcpy(objStmContainers_, st.objStmBits, sizeof(objStmContainers_));
-  rebuildObjStmContainerList(objStmContainerIds_, objStmContainerCount_, objStmContainers_);
 
   bool any = false;
   for (uint32_t i = 0; i < offsetCount_; ++i) {
@@ -838,71 +790,103 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
     return false;
   }
 
+  auto cacheSliceFromFile = [&](uint32_t objId, uint32_t rel, uint32_t nextRel) -> bool {
+    const size_t base = static_cast<size_t>(first);
+    const size_t start = base + static_cast<size_t>(rel);
+    if (start >= spillSize) {
+      return false;
+    }
+    size_t end = spillSize;
+    if (nextRel != UINT32_MAX && nextRel > rel) {
+      const size_t nextStart = base + static_cast<size_t>(nextRel);
+      if (nextStart > start && nextStart <= spillSize) {
+        end = nextStart;
+      }
+    }
+    const size_t len = end - start;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> slice;
+    if (len >= PDF_OBJECT_BODY_MAX || !spill.seek(start)) {
+      return false;
+    }
+    constexpr size_t kChunk = 128;
+    char buf[kChunk];
+    size_t left = len;
+    while (left > 0) {
+      const size_t want = std::min(left, kChunk);
+      const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
+      if (rd <= 0 || !slice.append(buf, static_cast<size_t>(rd))) {
+        return false;
+      }
+      left -= static_cast<size_t>(rd);
+    }
+    const std::string_view trimmed = trimObjStmSlice(slice.view());
+    if (trimmed.empty()) {
+      return false;
+    }
+    PdfFixedString<PDF_INLINE_DICT_MAX> d;
+    PdfByteBuffer stm;
+    if (!splitObjStmObjectSlice(trimmed, d, stm)) {
+      return false;
+    }
+    return insertInlineObject(objId, d, stm.ptr(), stm.len);
+  };
+
+  if (!spill.seek(0)) {
+    spill.close();
+    storage.remove(tempPath.c_str());
+    return false;
+  }
+  bool havePrev = false;
+  uint32_t prevObj = 0;
+  uint32_t prevRel = 0;
+  bool afterTarget = false;
+  uint32_t cachedAfterTarget = 0;
   uint32_t targetRel = 0;
-  uint32_t nextRel = 0;
-  if (!scanObjStmHeaderForTargetAndNext(spill, static_cast<size_t>(first), nObj, targetObjId, targetRel, nextRel)) {
-    spill.close();
-    storage.remove(tempPath.c_str());
-    return false;
-  }
+  uint32_t targetNextRel = UINT32_MAX;
+  bool targetFound = false;
 
-  const size_t start = static_cast<size_t>(first) + static_cast<size_t>(targetRel);
-  if (start > spillSize) {
-    spill.close();
-    storage.remove(tempPath.c_str());
-    return false;
+  for (int i = 0; i < nObj; ++i) {
+    uint32_t objId = 0;
+    uint32_t rel = 0;
+    if (!readObjStmUnsignedToken(spill, static_cast<size_t>(first), objId) ||
+        !readObjStmUnsignedToken(spill, static_cast<size_t>(first), rel)) {
+      spill.close();
+      storage.remove(tempPath.c_str());
+      return false;
+    }
+    if (havePrev) {
+      if (prevObj == targetObjId) {
+        targetFound = true;
+        targetRel = prevRel;
+        targetNextRel = rel;
+        afterTarget = true;
+      } else if (afterTarget && cachedAfterTarget < PDF_MAX_INLINE_OBJECTS - 1U) {
+        const size_t headerPos = spill.position();
+        cacheSliceFromFile(prevObj, prevRel, rel);
+        spill.seek(headerPos);
+        ++cachedAfterTarget;
+      }
+    }
+    havePrev = true;
+    prevObj = objId;
+    prevRel = rel;
   }
-
-  size_t end = spillSize;
-  if (nextRel > targetRel) {
-    const size_t nextStart = static_cast<size_t>(first) + static_cast<size_t>(nextRel);
-    if (nextStart > start && nextStart <= spillSize) {
-      end = nextStart;
+  if (havePrev) {
+    if (prevObj == targetObjId) {
+      targetFound = true;
+      targetRel = prevRel;
+      targetNextRel = UINT32_MAX;
+    } else if (afterTarget && cachedAfterTarget < PDF_MAX_INLINE_OBJECTS - 1U) {
+      const size_t headerPos = spill.position();
+      cacheSliceFromFile(prevObj, prevRel, UINT32_MAX);
+      spill.seek(headerPos);
     }
   }
 
-  constexpr size_t kChunk = 256;
-  char buf[kChunk];
-  if (!spill.seek(start)) {
-    spill.close();
-    storage.remove(tempPath.c_str());
-    return false;
-  }
-  std::string slice;
-  slice.reserve(end - start);
-  size_t left = end - start;
-  while (left > 0) {
-    const size_t want = std::min(left, kChunk);
-    const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
-    if (rd <= 0) {
-      slice.clear();
-      break;
-    }
-    slice.append(buf, static_cast<size_t>(rd));
-    left -= static_cast<size_t>(rd);
-  }
+  const bool insertedTarget = targetFound && cacheSliceFromFile(targetObjId, targetRel, targetNextRel);
   spill.close();
   storage.remove(tempPath.c_str());
-  if (slice.empty()) {
-    return false;
-  }
-  while (!slice.empty() &&
-         (slice.front() == ' ' || slice.front() == '\t' || slice.front() == '\r' || slice.front() == '\n')) {
-    slice.erase(slice.begin());
-  }
-  while (!slice.empty() &&
-         (slice.back() == ' ' || slice.back() == '\t' || slice.back() == '\r' || slice.back() == '\n')) {
-    slice.pop_back();
-  }
-  if (slice.empty()) {
-    return false;
-  }
-  PdfFixedString<PDF_INLINE_DICT_MAX> d;
-  PdfByteBuffer stm;
-  if (!splitObjStmObjectSlice(slice, d, stm)) {
-    return false;
-  }
-  return insertInlineObject(targetObjId, d, stm.ptr(), stm.len);
+  return insertedTarget;
 #else
   ObjStmDecodeAccum stream{};
   if (!StreamDecoder::flateDecodeChunks(file, so, sl, appendObjStmBytes, &stream)) {
@@ -912,45 +896,78 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
     return false;
   }
 
+  auto cacheSliceFromBytes = [&](uint32_t objId, uint32_t rel, uint32_t nextRel) -> bool {
+    const size_t base = static_cast<size_t>(first);
+    const size_t start = base + static_cast<size_t>(rel);
+    if (start >= stream.bytes.size()) {
+      return false;
+    }
+    size_t end = stream.bytes.size();
+    if (nextRel != UINT32_MAX && nextRel > rel) {
+      const size_t nextStart = base + static_cast<size_t>(nextRel);
+      if (nextStart > start && nextStart <= stream.bytes.size()) {
+        end = nextStart;
+      }
+    }
+    if (start >= end) {
+      return false;
+    }
+    const std::string_view slice(reinterpret_cast<const char*>(stream.bytes.data() + start), end - start);
+    const std::string_view trimmed = trimObjStmSlice(slice);
+    if (trimmed.empty()) {
+      return false;
+    }
+    PdfFixedString<PDF_INLINE_DICT_MAX> d;
+    PdfByteBuffer stm;
+    if (!splitObjStmObjectSlice(trimmed, d, stm)) {
+      return false;
+    }
+    return insertInlineObject(objId, d, stm.ptr(), stm.len);
+  };
+
+  bool havePrev = false;
+  uint32_t prevObj = 0;
+  uint32_t prevRel = 0;
+  bool afterTarget = false;
+  uint32_t cachedAfterTarget = 0;
   uint32_t targetRel = 0;
-  uint32_t nextRel = 0;
-  if (!scanObjStmHeaderFromBytes(stream.bytes.data(), stream.bytes.size(), static_cast<size_t>(first), nObj,
-                                 targetObjId, targetRel, nextRel)) {
-    return false;
+  uint32_t targetNextRel = UINT32_MAX;
+  bool targetFound = false;
+  size_t pos = 0;
+
+  for (int i = 0; i < nObj; ++i) {
+    uint32_t objId = 0;
+    uint32_t rel = 0;
+    if (!parseObjStmPairToken(stream.bytes.data(), stream.bytes.size(), static_cast<size_t>(first), pos, objId) ||
+        !parseObjStmPairToken(stream.bytes.data(), stream.bytes.size(), static_cast<size_t>(first), pos, rel)) {
+      return false;
+    }
+    if (havePrev) {
+      if (prevObj == targetObjId) {
+        targetFound = true;
+        targetRel = prevRel;
+        targetNextRel = rel;
+        afterTarget = true;
+      } else if (afterTarget && cachedAfterTarget < PDF_MAX_INLINE_OBJECTS - 1U) {
+        cacheSliceFromBytes(prevObj, prevRel, rel);
+        ++cachedAfterTarget;
+      }
+    }
+    havePrev = true;
+    prevObj = objId;
+    prevRel = rel;
   }
-  const size_t base = static_cast<size_t>(first);
-  const size_t start = base + static_cast<size_t>(targetRel);
-  const size_t end = nextRel == UINT32_MAX ? SIZE_MAX : base + static_cast<size_t>(nextRel);
-  if (end != SIZE_MAX && end < start) {
-    return false;
-  }
-  if (nextRel != UINT32_MAX && end > stream.bytes.size()) {
-    return false;
+  if (havePrev) {
+    if (prevObj == targetObjId) {
+      targetFound = true;
+      targetRel = prevRel;
+      targetNextRel = UINT32_MAX;
+    } else if (afterTarget && cachedAfterTarget < PDF_MAX_INLINE_OBJECTS - 1U) {
+      cacheSliceFromBytes(prevObj, prevRel, UINT32_MAX);
+    }
   }
 
-  const size_t clipEnd = (end == SIZE_MAX) ? stream.bytes.size() : std::min(end, stream.bytes.size());
-  if (start >= clipEnd) {
-    return false;
-  }
-  std::string_view slice(reinterpret_cast<const char*>(stream.bytes.data() + start), clipEnd - start);
-  std::string_view trimmed = slice;
-  while (!trimmed.empty() &&
-         (trimmed.front() == ' ' || trimmed.front() == '\t' || trimmed.front() == '\r' || trimmed.front() == '\n')) {
-    trimmed.remove_prefix(1);
-  }
-  while (!trimmed.empty() &&
-         (trimmed.back() == ' ' || trimmed.back() == '\t' || trimmed.back() == '\r' || trimmed.back() == '\n')) {
-    trimmed.remove_suffix(1);
-  }
-  if (trimmed.empty()) {
-    return false;
-  }
-  PdfFixedString<PDF_INLINE_DICT_MAX> d;
-  PdfByteBuffer stm;
-  if (!splitObjStmObjectSlice(trimmed, d, stm)) {
-    return false;
-  }
-  return insertInlineObject(targetObjId, d, stm.ptr(), stm.len);
+  return targetFound && cacheSliceFromBytes(targetObjId, targetRel, targetNextRel);
 #endif
 }
 
@@ -961,6 +978,38 @@ bool XrefTable::setOffset(uint32_t objId, uint32_t off) {
   }
   const size_t base = static_cast<size_t>(objId) * kPackedOffsetBytes;
   storePackedOffset(offsets_ + base, off);
+  objStreamIdByObjectId_[objId] = 0;
+  if (objId + 1 > offsetCount_) {
+    offsetCount_ = objId + 1;
+  }
+  return true;
+}
+
+bool XrefTable::resetToCached(uint32_t rootObjId, uint32_t objectCount) {
+  if (objectCount > PDF_MAX_OBJECTS) {
+    return false;
+  }
+  std::memset(offsets_, 0, sizeof(offsets_));
+  offsetCount_ = objectCount;
+  rootObjId_ = rootObjId;
+  inlineVictim_ = 0;
+  for (auto& e : inline_) {
+    e = InlineEntry{};
+  }
+  std::memset(objStmContainers_, 0, sizeof(objStmContainers_));
+  std::memset(objStreamIdByObjectId_, 0, sizeof(objStreamIdByObjectId_));
+  return true;
+}
+
+bool XrefTable::setObjectStreamForObject(uint32_t objId, uint32_t stmObjId) {
+  if (objId >= PDF_MAX_OBJECTS || stmObjId >= PDF_MAX_OBJECTS) {
+    pdfLogErr("xref: object stream id overflow");
+    return false;
+  }
+  const size_t base = static_cast<size_t>(objId) * kPackedOffsetBytes;
+  storePackedOffset(offsets_ + base, 0);
+  objStreamIdByObjectId_[objId] = static_cast<uint16_t>(stmObjId);
+  objStmContainers_[stmObjId >> 3U] |= static_cast<uint8_t>(1U << (stmObjId & 7U));
   if (objId + 1 > offsetCount_) {
     offsetCount_ = objId + 1;
   }
@@ -1038,7 +1087,7 @@ bool XrefTable::parse(FsFile& file) {
     e = InlineEntry{};
   }
   std::memset(objStmContainers_, 0, sizeof(objStmContainers_));
-  objStmContainerCount_ = 0;
+  std::memset(objStreamIdByObjectId_, 0, sizeof(objStreamIdByObjectId_));
 
   const size_t fileSize = file.fileSize();
   if (fileSize < 32) {
@@ -1123,8 +1172,22 @@ bool XrefTable::readDictForObject(FsFile& file, uint32_t objId, PdfFixedString<P
   }
   const uint32_t off = getOffset(objId);
   if (off == 0) {
-    for (uint32_t i = 0; i < static_cast<uint32_t>(objStmContainerCount_); ++i) {
-      const uint32_t sid = static_cast<uint32_t>(objStmContainerIds_[i]);
+    const uint32_t mappedStreamId = objId < PDF_MAX_OBJECTS ? static_cast<uint32_t>(objStreamIdByObjectId_[objId]) : 0;
+    if (mappedStreamId != 0) {
+      if (const_cast<XrefTable*>(this)->loadObjStreamForTarget(file, mappedStreamId, objId)) {
+        const InlineEntry* loaded = findInline(objId);
+        if (loaded) {
+          return dictBody.assign(loaded->dict, loaded->dictLen);
+        }
+      }
+    }
+    for (uint32_t sid = 0; sid < PDF_MAX_OBJECTS; ++sid) {
+      if ((objStmContainers_[sid >> 3U] & static_cast<uint8_t>(1U << (sid & 7U))) == 0U) {
+        continue;
+      }
+      if (sid == mappedStreamId) {
+        continue;
+      }
       if (const_cast<XrefTable*>(this)->loadObjStreamForTarget(file, sid, objId)) {
         const InlineEntry* loaded = findInline(objId);
         if (loaded) {
@@ -1215,3 +1278,10 @@ uint32_t XrefTable::getOffset(uint32_t objId) const {
 uint32_t XrefTable::objectCount() const { return offsetCount_; }
 
 uint32_t XrefTable::rootObjId() const { return rootObjId_; }
+
+uint32_t XrefTable::objectStreamIdForObject(uint32_t objId) const {
+  if (objId >= PDF_MAX_OBJECTS) {
+    return 0;
+  }
+  return static_cast<uint32_t>(objStreamIdByObjectId_[objId]);
+}

@@ -33,6 +33,7 @@ $CC -c -O2 "${COMMON_FLAGS[@]}" "test/pdf/stubs/uzlib_checksum_stubs.c" -o "$OUT
 
 SOURCES=(
   "lib/Pdf/Pdf/PdfCachedPageReader.cpp"
+  "lib/Pdf/Pdf/PdfCache.cpp"
   "lib/Pdf/Pdf/XrefTable.cpp"
   "lib/Pdf/Pdf/PdfObject.cpp"
   "lib/Pdf/Pdf/PageTree.cpp"

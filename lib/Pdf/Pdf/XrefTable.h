@@ -26,8 +26,7 @@ class XrefTable {
 
   InlineEntry inline_[PDF_MAX_INLINE_OBJECTS]{};
   uint8_t objStmContainers_[(PDF_MAX_OBJECTS + 7) / 8]{};
-  uint16_t objStmContainerIds_[PDF_MAX_OBJECTS]{};
-  uint16_t objStmContainerCount_ = 0;
+  uint16_t objStreamIdByObjectId_[PDF_MAX_OBJECTS]{};
   uint16_t inlineVictim_ = 0;
 
   bool parseXrefStream(FsFile& file, size_t fileSize, uint32_t xrefObjOffset);
@@ -42,9 +41,12 @@ class XrefTable {
   uint32_t getOffset(uint32_t objId) const;
   uint32_t objectCount() const;
   uint32_t rootObjId() const;
+  uint32_t objectStreamIdForObject(uint32_t objId) const;
 
   // Used by classic xref merge (non-member in .cpp); bounded xref table updates only.
+  bool resetToCached(uint32_t rootObjId, uint32_t objectCount);
   bool setOffset(uint32_t objId, uint32_t off);
+  bool setObjectStreamForObject(uint32_t objId, uint32_t stmObjId);
   void ensureOffsetCount(uint32_t n);
 
   bool readDictForObject(FsFile& file, uint32_t objId, PdfFixedString<PDF_OBJECT_BODY_MAX>& dictBody) const;

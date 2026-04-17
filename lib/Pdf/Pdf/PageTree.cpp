@@ -87,10 +87,6 @@ void parseKidsRefs(std::string_view arr, PdfFixedVector<uint32_t, kTraversalCap>
 bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
   pageOffsets.clear();
   pageObjectIds.clear();
-  pageIndexMapReady_ = false;
-  for (uint32_t i = 0; i < PDF_MAX_OBJECTS; ++i) {
-    pageIndexByObjectId_[i] = kInvalidPageIndex;
-  }
 
   PdfFixedVector<uint32_t, kTraversalCap> stack;
   if (!stack.push_back(pagesObjId)) {
@@ -139,12 +135,8 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
         pdfLogErr("PageTree: too many pages");
         return false;
       }
-      const uint32_t pageIndex = static_cast<uint32_t>(pageOffsets.size() - 1);
       if (!pageObjectIds.push_back(objId)) {
         return false;
-      }
-      if (objId < PDF_MAX_OBJECTS) {
-        pageIndexByObjectId_[objId] = static_cast<uint16_t>(pageIndex);
       }
     } else if (debugPageTree()) {
       LOG_ERR("PageTree", "unrecognized type obj=%u", objId);
@@ -155,17 +147,12 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
     pdfLogErr("PageTree: no pages");
     return false;
   }
-  pageIndexMapReady_ = true;
   return true;
 }
 
 bool PageTree::setPageObjectIds(const PdfFixedVector<uint32_t, PDF_MAX_PAGES>& cachedPageObjectIds) {
   pageOffsets.clear();
   pageObjectIds.clear();
-
-  for (uint32_t i = 0; i < PDF_MAX_OBJECTS; ++i) {
-    pageIndexByObjectId_[i] = kInvalidPageIndex;
-  }
 
   for (size_t i = 0; i < cachedPageObjectIds.size(); ++i) {
     if (!pageOffsets.push_back(0)) {
@@ -175,12 +162,8 @@ bool PageTree::setPageObjectIds(const PdfFixedVector<uint32_t, PDF_MAX_PAGES>& c
     if (!this->pageObjectIds.push_back(objId)) {
       return false;
     }
-    if (objId < PDF_MAX_OBJECTS) {
-      pageIndexByObjectId_[objId] = static_cast<uint16_t>(i);
-    }
   }
 
-  pageIndexMapReady_ = true;
   return true;
 }
 
@@ -197,10 +180,6 @@ uint32_t PageTree::getPageObjectId(uint32_t pageIndex) const {
 }
 
 uint32_t PageTree::pageIndexForObjectId(uint32_t objId) const {
-  if (pageIndexMapReady_ && objId < PDF_MAX_OBJECTS) {
-    const uint16_t idx = pageIndexByObjectId_[objId];
-    return (idx == kInvalidPageIndex) ? UINT32_MAX : static_cast<uint32_t>(idx);
-  }
   for (size_t i = 0; i < pageObjectIds.size(); ++i) {
     if (pageObjectIds[i] == objId) return static_cast<uint32_t>(i);
   }

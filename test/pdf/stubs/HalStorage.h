@@ -7,13 +7,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 #include "Print.h"
 
 class HalFile : public Print {
   std::vector<uint8_t> data_;
+  std::string writePath_;
   size_t pos_ = 0;
+  bool writeMode_ = false;
 
  public:
   HalFile() = default;
@@ -38,6 +42,14 @@ class HalFile : public Print {
       return false;
     }
     return true;
+  }
+
+  bool openForWrite(const char* path) {
+    data_.clear();
+    writePath_ = path ? path : "";
+    pos_ = 0;
+    writeMode_ = true;
+    return !writePath_.empty();
   }
 
   void flush() {}
@@ -83,22 +95,40 @@ class HalFile : public Print {
   }
 
   size_t write(const void* buf, size_t count) {
-    (void)buf;
+    if (!writeMode_ || !buf) {
+      return 0;
+    }
+    if (pos_ + count > data_.size()) {
+      data_.resize(pos_ + count);
+    }
+    std::memcpy(data_.data() + pos_, buf, count);
+    pos_ += count;
     return count;
   }
 
-  size_t write(uint8_t b) override {
-    (void)b;
-    return 1;
-  }
+  size_t write(uint8_t b) override { return write(&b, 1); }
 
   bool rename(const char*) { return false; }
   bool isDirectory() const { return false; }
   void rewindDirectory() {}
   HalFile openNextFile() { return HalFile(); }
-  bool close() { return true; }
-  bool isOpen() const { return !data_.empty(); }
-  explicit operator bool() const { return !data_.empty(); }
+  bool close() {
+    if (!writeMode_) {
+      return true;
+    }
+    std::filesystem::create_directories(std::filesystem::path(writePath_).parent_path());
+    FILE* f = std::fopen(writePath_.c_str(), "wb");
+    if (!f) {
+      writeMode_ = false;
+      return false;
+    }
+    const size_t written = data_.empty() ? 0 : std::fwrite(data_.data(), 1, data_.size(), f);
+    const bool ok = written == data_.size() && std::fclose(f) == 0;
+    writeMode_ = false;
+    return ok;
+  }
+  bool isOpen() const { return writeMode_ || !data_.empty(); }
+  explicit operator bool() const { return isOpen(); }
 
   HalFile(HalFile&&) = default;
   HalFile& operator=(HalFile&&) = default;
@@ -107,3 +137,39 @@ class HalFile : public Print {
 };
 
 using FsFile = HalFile;
+
+class HalStorage {
+  static std::string hostPath(const char* path) {
+    if (!path) return {};
+    constexpr const char* kDevicePrefix = "/.crosspoint";
+    constexpr size_t kDevicePrefixLen = 12;
+    if (std::strncmp(path, kDevicePrefix, kDevicePrefixLen) == 0) {
+      return std::string("test/pdf/build/.crosspoint") + (path + kDevicePrefixLen);
+    }
+    return path;
+  }
+
+ public:
+  bool openFileForRead(const char*, const char* path, FsFile& out) { return out.loadPath(hostPath(path).c_str()); }
+  bool openFileForWrite(const char*, const char* path, FsFile& out) { return out.openForWrite(hostPath(path).c_str()); }
+  bool ensureDirectoryExists(const char* path) {
+    if (!path || !path[0]) return false;
+    std::filesystem::create_directories(hostPath(path));
+    return true;
+  }
+  bool exists(const char* path) { return path && std::filesystem::exists(hostPath(path)); }
+  bool remove(const char* path) { return path && std::filesystem::remove(hostPath(path)); }
+  bool rename(const char* from, const char* to) {
+    if (!from || !to) return false;
+    std::error_code ec;
+    std::filesystem::rename(hostPath(from), hostPath(to), ec);
+    return !ec;
+  }
+  bool removeDir(const char* path) {
+    if (!path) return false;
+    std::filesystem::remove_all(hostPath(path));
+    return true;
+  }
+};
+
+inline HalStorage Storage;

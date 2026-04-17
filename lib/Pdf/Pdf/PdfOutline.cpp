@@ -368,7 +368,7 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
   }
 
   uint32_t destTreeRoot = namesObjId;
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> rootBody;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> rootBody;
   if (xref.readDictForObject(file, namesObjId, rootBody)) {
     const uint32_t destsObjId = PdfObject::getDictRef("/Dests", rootBody.view());
     if (destsObjId != 0) {
@@ -376,8 +376,7 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
     }
   }
 
-  static PdfFixedVector<uint32_t, kTraversalCap> stack;
-  stack.clear();
+  PdfFixedVector<uint32_t, kTraversalCap> stack;
   if (!stack.push_back(destTreeRoot)) {
     return false;
   }
@@ -386,12 +385,12 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
     const uint32_t nodeId = stack.back();
     stack.pop_back();
 
-    static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
     if (!xref.readDictForObject(file, nodeId, body)) {
       continue;
     }
 
-    static PdfFixedString<PDF_DICT_VALUE_MAX> kidsVal;
+    PdfFixedString<PDF_DICT_VALUE_MAX> kidsVal;
     if (PdfObject::getDictValue("/Kids", body.view(), kidsVal)) {
       const char* p = kidsVal.c_str();
       const char* end = kidsVal.c_str() + kidsVal.size();
@@ -408,7 +407,7 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
       continue;
     }
 
-    static PdfFixedString<PDF_DICT_VALUE_MAX> namesVal;
+    PdfFixedString<PDF_DICT_VALUE_MAX> namesVal;
     if (!PdfObject::getDictValue("/Names", body.view(), namesVal)) {
       continue;
     }
@@ -470,7 +469,7 @@ bool resolveNamedDestinationToPage(FsFile& file, const XrefTable& xref, const Pa
     if (hasDirectDest) {
       return parseDestArrayToPage(pageTree, directDest.view(), outPage);
     }
-    static PdfFixedString<PDF_OBJECT_BODY_MAX> destBody;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> destBody;
     if (!xref.readDictForObject(file, destObjId, destBody)) {
       return false;
     }
@@ -506,7 +505,7 @@ bool resolveActionDestination(FsFile& file, const XrefTable& xref, std::string_v
     std::strtoul(afterGen, &e, 10);
     while (*e == ' ' || *e == '\t' || *e == '\r' || *e == '\n') ++e;
     if (*e == 'R' || *e == 'r') {
-      static PdfFixedString<PDF_OBJECT_BODY_MAX> actionBody;
+      PdfFixedString<PDF_OBJECT_BODY_MAX> actionBody;
       if (!xref.readDictForObject(file, static_cast<uint32_t>(objId), actionBody)) {
         return false;
       }
@@ -520,8 +519,7 @@ bool resolveActionDestination(FsFile& file, const XrefTable& xref, std::string_v
 bool walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t namesObjId,
                      uint32_t firstItemId, PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& out, size_t& count,
                      const size_t maxEntries) {
-  static PdfFixedVector<uint32_t, PDF_MAX_OUTLINE_ENTRIES * 2> stack;
-  stack.clear();
+  PdfFixedVector<uint32_t, PDF_MAX_OUTLINE_ENTRIES * 2> stack;
   if (firstItemId != 0 && !stack.push_back(firstItemId)) {
     return false;
   }
@@ -530,24 +528,24 @@ bool walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTr
     const uint32_t itemId = stack.back();
     stack.pop_back();
 
-    static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
     if (!xref.readDictForObject(file, itemId, body)) {
       continue;
     }
 
     PdfOutlineEntry entry;
-    static PdfFixedString<PDF_DICT_VALUE_MAX> titleRaw;
+    PdfFixedString<PDF_DICT_VALUE_MAX> titleRaw;
     if (PdfObject::getDictValue("/Title", body.view(), titleRaw)) {
       decodeTitleValue(std::move(titleRaw), entry.title);
     }
 
-    static PdfFixedString<PDF_DICT_VALUE_MAX> dest;
+    PdfFixedString<PDF_DICT_VALUE_MAX> dest;
     if (!PdfObject::getDictValue("/Dest", body.view(), dest)) {
       dest.clear();
     }
     trimVal(dest);
     if (dest.empty()) {
-      static PdfFixedString<PDF_DICT_VALUE_MAX> action;
+      PdfFixedString<PDF_DICT_VALUE_MAX> action;
       if (PdfObject::getDictValue("/A", body.view(), action) && !action.empty()) {
         if (!resolveActionDestination(file, xref, action.view(), dest)) {
           dest.clear();
@@ -592,7 +590,7 @@ bool PdfOutlineParser::parse(FsFile& file, const XrefTable& xref, const PageTree
     return true;
   }
 
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
   if (!xref.readDictForObject(file, outlinesObjId, body)) {
     return true;
   }

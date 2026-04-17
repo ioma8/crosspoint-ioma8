@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <new>
 
 #include "InflateReader.h"
 #include "Pdf/ContentStream.h"
@@ -81,6 +83,29 @@ bool loadCatalogInfo(FsFile& file, const XrefTable& xref, uint32_t rootId, Catal
   return info.pagesObjId != 0;
 }
 
+template <typename Fn>
+class ScopeExit {
+ public:
+  explicit ScopeExit(Fn fn) : fn_(fn) {}
+  ~ScopeExit() {
+    if (active_) {
+      fn_();
+    }
+  }
+  ScopeExit(const ScopeExit&) = delete;
+  ScopeExit& operator=(const ScopeExit&) = delete;
+  void dismiss() { active_ = false; }
+
+ private:
+  Fn fn_;
+  bool active_ = true;
+};
+
+template <typename Fn>
+ScopeExit<Fn> makeScopeExit(Fn fn) {
+  return ScopeExit<Fn>(fn);
+}
+
 }  // namespace
 
 Pdf::~Pdf() { close(); }
@@ -104,7 +129,7 @@ void Pdf::close() {
   cachedSourceSignature_ = {};
   sourceSignature_ = {};
   path_.clear();
-  streamScratch_.clear();
+  releaseXref();
   PdfScratch::releaseRetainedBuffers();
   InflateReader::releaseSharedBuffer();
 }
@@ -133,15 +158,25 @@ bool Pdf::computeSourceSignature(SourceSignature& outSignature) {
 
 bool Pdf::parseFromSource(bool needsOutlines) {
   CatalogInfo catalogInfo;
-  if (!xref_.parse(file_)) {
+  if (!xref_) {
+    xref_.reset(new (std::nothrow) XrefTable());
+    if (!xref_) {
+      return false;
+    }
+  }
+  auto releaseXrefOnExit = makeScopeExit([this] { releaseXref(); });
+  if (!xref_->parse(file_)) {
     return false;
   }
-  if (!loadCatalogInfo(file_, xref_, xref_.rootObjId(), catalogInfo)) {
+  xrefReady_ = true;
+  XrefTable& xref = *xref_;
+  if (!loadCatalogInfo(file_, xref, xref.rootObjId(), catalogInfo)) {
     return false;
   }
-  if (!pageTree_.parse(file_, xref_, catalogInfo.pagesObjId)) {
+  if (!pageTree_.parse(file_, xref, catalogInfo.pagesObjId)) {
     return false;
   }
+  cache_.saveXref(xref);
 
   pages_ = pageTree_.pageCount();
   cachedPageObjectIds_.clear();
@@ -154,12 +189,11 @@ bool Pdf::parseFromSource(bool needsOutlines) {
   if (needsOutlines) {
     outlineEntries_.clear();
     if (catalogInfo.outlinesId != 0) {
-      PdfOutlineParser::parse(file_, xref_, pageTree_, catalogInfo.outlinesId, catalogInfo.namesObjId, outlineEntries_);
+      PdfOutlineParser::parse(file_, xref, pageTree_, catalogInfo.outlinesId, catalogInfo.namesObjId, outlineEntries_);
     }
   }
 
   cachedSourceSignature_ = sourceSignature_;
-  xrefReady_ = true;
   pageMapFromCache_ = false;
   outlinesFromCache_ = false;
   metaSaved_ = false;
@@ -173,11 +207,30 @@ bool Pdf::ensureXrefReady() {
   if (!valid_) {
     return false;
   }
-  if (!xref_.parse(file_)) {
+  if (!xref_) {
+    xref_.reset(new (std::nothrow) XrefTable());
+    if (!xref_) {
+      return false;
+    }
+  }
+  auto releaseXrefOnFailure = makeScopeExit([this] { releaseXref(); });
+  if (cache_.loadXref(*xref_)) {
+    xrefReady_ = true;
+    releaseXrefOnFailure.dismiss();
+    return true;
+  }
+  if (!xref_->parse(file_)) {
     return false;
   }
+  cache_.saveXref(*xref_);
   xrefReady_ = true;
+  releaseXrefOnFailure.dismiss();
   return true;
+}
+
+void Pdf::releaseXref() {
+  xref_.reset();
+  xrefReady_ = false;
 }
 
 bool Pdf::open(const char* path) {
@@ -212,13 +265,12 @@ bool Pdf::open(const char* path) {
                       &cachedTail) &&
       cachedPageCount > 0 && cachedPageCount <= PDF_MAX_PAGES && cachedPageCount == cachedPageObjectIds_.size() &&
       cachedFileSize == static_cast<uint32_t>(sourceSignature_.fileSize) && cachedHead == sourceSignature_.headHash &&
-      cachedTail == sourceSignature_.tailHash && cache_.allPagesCached(cachedPageCount) &&
-      pageTree_.setPageObjectIds(cachedPageObjectIds_)) {
+      cachedTail == sourceSignature_.tailHash && pageTree_.setPageObjectIds(cachedPageObjectIds_)) {
     pages_ = cachedPageCount;
     cachedSourceSignature_ = sourceSignature_;
     outlinesFromCache_ = true;
     pageMapFromCache_ = true;
-    xrefReady_ = false;
+    releaseXref();
     metaSaved_ = true;
     valid_ = true;
     return true;
@@ -254,13 +306,15 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
   if (!ensureXrefReady()) {
     return false;
   }
+  auto releaseXrefOnExit = makeScopeExit([this] { releaseXref(); });
+  XrefTable& xref = *xref_;
 
   const uint32_t pageObjId = pageTree_.getPageObjectId(pageNum);
   if (pageObjId == 0) {
     return false;
   }
 
-  if (!xref_.readDictForObject(file_, pageObjId, pageBody)) {
+  if (!xref.readDictForObject(file_, pageObjId, pageBody)) {
     return false;
   }
 
@@ -273,26 +327,29 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
   uint32_t streamOffset = 0;
   uint32_t streamLength = 0;
   bool compressed = false;
-  if (!xref_.readStreamMetaForObject(file_, contentId, contentDict, streamOffset, streamLength, compressed)) {
-    if (!xref_.readStreamForObject(file_, contentId, contentDict, streamScratch_, compressed)) {
+  if (!xref.readStreamMetaForObject(file_, contentId, contentDict, streamOffset, streamLength, compressed)) {
+    std::unique_ptr<PdfByteBuffer> streamScratch(new (std::nothrow) PdfByteBuffer());
+    if (!streamScratch || !xref.readStreamForObject(file_, contentId, contentDict, *streamScratch, compressed)) {
       return false;
     }
-    if (streamScratch_.len == 0) {
+    if (streamScratch->len == 0) {
       return false;
     }
-    if (!ContentStream::parseBuffer(streamScratch_.ptr(), streamScratch_.len, compressed, file_, xref_, pageBody.view(),
+    if (!ContentStream::parseBuffer(streamScratch->ptr(), streamScratch->len, compressed, file_, xref, pageBody.view(),
                                     out)) {
       pdfLogErr("Failed to parse page");
       return false;
     }
   } else {
-    if (!ContentStream::parse(file_, streamOffset, streamLength, compressed, xref_, pageBody.view(), out)) {
+    if (!ContentStream::parse(file_, streamOffset, streamLength, compressed, xref, pageBody.view(), out)) {
       pdfLogErr("Failed to parse page");
       return false;
     }
   }
 
   cache_.savePage(pageNum, out);
+  releaseXrefOnExit.dismiss();
+  releaseXref();
   if (!metaSaved_) {
     persistCacheMetaIfNeeded();
   }

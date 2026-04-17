@@ -13,7 +13,7 @@
 #endif
 #endif
 
-// --- Bounded PDF model (no heap in lib/Pdf): reject / fail closed when exceeded ---
+// --- Bounded PDF model: reject / fail closed when exceeded ---
 
 #ifndef PDF_MAX_PATH
 #define PDF_MAX_PATH 256
@@ -31,7 +31,7 @@
 #define PDF_MAX_OUTLINE_ENTRIES 64
 #endif
 
-// Object body read buffer (dual static buffers for nested readAt; see PdfObject.cpp).
+// Object body read buffer used by callers for one object dictionary at a time.
 #ifdef HAL_STORAGE_STUB
 #ifndef PDF_OBJECT_BODY_MAX
 #define PDF_OBJECT_BODY_MAX 16384
@@ -52,7 +52,7 @@
 #endif
 #endif
 
-// Object streams / xref: single reusable static workspace (sequential use only).
+// Object stream and xref decode work chunks.
 #ifdef HAL_STORAGE_STUB
 #ifndef PDF_LARGE_WORK_BYTES
 #define PDF_LARGE_WORK_BYTES (4 * 1024)

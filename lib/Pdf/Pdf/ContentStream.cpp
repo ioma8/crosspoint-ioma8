@@ -2,14 +2,13 @@
 
 #include <Logging.h>
 
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <sstream>
-#include <unordered_map>
-#include <vector>
 
 #include "PdfFixed.h"
 #include "PdfLimits.h"
@@ -348,30 +347,43 @@ static bool parseToUnicodeCMap(std::string_view cmap, ToUnicodeMap& out) {
   return !out.empty();
 }
 
+class ToUnicodeWorkspaceUse {
+ public:
+  ToUnicodeWorkspaceUse() : workspace_(PdfScratch::acquireToUnicodeWorkspace()) {}
+  ~ToUnicodeWorkspaceUse() {
+    if (workspace_) {
+      PdfScratch::releaseToUnicodeWorkspaceUse();
+    }
+  }
+  ToUnicodeWorkspaceUse(const ToUnicodeWorkspaceUse&) = delete;
+  ToUnicodeWorkspaceUse& operator=(const ToUnicodeWorkspaceUse&) = delete;
+
+  PdfScratch::ToUnicodeWorkspace* get() const { return workspace_; }
+
+ private:
+  PdfScratch::ToUnicodeWorkspace* workspace_ = nullptr;
+};
+
 [[gnu::noinline]] static bool loadToUnicodeMapForFont(FsFile& file, const XrefTable& xref, uint32_t fontObjId,
                                                       ToUnicodeMap& out) {
   out.clear();
-  PdfScratch::ToUnicodeWorkspace* workspace = PdfScratch::acquireToUnicodeWorkspace();
+  ToUnicodeWorkspaceUse workspaceUse;
+  PdfScratch::ToUnicodeWorkspace* workspace = workspaceUse.get();
   if (!workspace) {
     return false;
   }
 
-  auto releaseWorkspace = [] { PdfScratch::releaseToUnicodeWorkspaceUse(); };
-
   if (!xref.readDictForObject(file, fontObjId, workspace->body)) {
-    releaseWorkspace();
     return false;
   }
   const uint32_t tuId = PdfObject::getDictRef("/ToUnicode", workspace->body.view());
   if (tuId == 0) {
-    releaseWorkspace();
     return false;
   }
   workspace->payload.clear();
   workspace->decoded.clear();
   bool flate = false;
   if (!xref.readStreamForObject(file, tuId, workspace->cmapDict, workspace->payload, flate)) {
-    releaseWorkspace();
     return false;
   }
   size_t got = 0;
@@ -383,12 +395,10 @@ static bool parseToUnicodeCMap(std::string_view cmap, ToUnicodeMap& out) {
     std::memcpy(workspace->decoded.ptr(), workspace->payload.ptr(), got);
   }
   if (got == 0) {
-    releaseWorkspace();
     return false;
   }
   const bool parsed =
       parseToUnicodeCMap(std::string_view(reinterpret_cast<const char*>(workspace->decoded.ptr()), got), out);
-  releaseWorkspace();
   return parsed;
 }
 
@@ -449,7 +459,8 @@ void skipWsComment(char*& p, char* end) {
   }
 }
 
-bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
+template <size_t N>
+bool readPdfStringLiteralFs(char*& p, char* end, PdfFixedString<N>& rawBytes) {
   rawBytes.clear();
   if (p >= end || *p != '(') return false;
   ++p;
@@ -466,9 +477,7 @@ bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
           oct = (oct << 3) | (*p++ - '0');
           ++count;
         }
-        if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-          rawBytes.push_back(static_cast<char>(oct & 0xFF));
-        }
+        rawBytes.append(static_cast<char>(oct & 0xFF));
         continue;
       }
       char out = c;
@@ -482,17 +491,12 @@ bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
         out = '\b';
       else if (c == 'f')
         out = '\f';
-      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-        rawBytes.push_back(out);
-      }
+      rawBytes.append(out);
       continue;
     }
     if (*p == '(') {
       ++depth;
-      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-        rawBytes.push_back(*p);
-      }
-      ++p;
+      rawBytes.append(*p++);
       continue;
     }
     if (*p == ')') {
@@ -501,21 +505,16 @@ bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
         ++p;
         break;
       }
-      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-        rawBytes.push_back(*p);
-      }
-      ++p;
+      rawBytes.append(*p++);
       continue;
     }
-    if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-      rawBytes.push_back(*p);
-    }
-    ++p;
+    rawBytes.append(*p++);
   }
   return true;
 }
 
-bool readHexString(char*& p, char* end, std::string& rawBytes) {
+template <size_t N>
+bool readHexStringFs(char*& p, char* end, PdfFixedString<N>& rawBytes) {
   rawBytes.clear();
   if (p >= end || *p != '<') return false;
   ++p;
@@ -524,7 +523,7 @@ bool readHexString(char*& p, char* end, std::string& rawBytes) {
   while (p < end) {
     if (*p == '>') {
       ++p;
-      if (haveNibble) rawBytes.push_back(static_cast<char>(acc));
+      if (haveNibble) rawBytes.append(static_cast<char>(acc));
       return true;
     }
     if (std::isspace(static_cast<unsigned char>(*p))) {
@@ -544,9 +543,7 @@ bool readHexString(char*& p, char* end, std::string& rawBytes) {
       haveNibble = true;
     } else {
       acc |= static_cast<uint8_t>(v);
-      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
-        rawBytes.push_back(static_cast<char>(acc));
-      }
+      rawBytes.append(static_cast<char>(acc));
       haveNibble = false;
     }
     ++p;
@@ -554,26 +551,28 @@ bool readHexString(char*& p, char* end, std::string& rawBytes) {
   return false;
 }
 
-bool readNumber(char*& p, char* end, std::string& out) {
+template <size_t N>
+bool readNumberFs(char*& p, char* end, PdfFixedString<N>& out) {
   out.clear();
   if (p >= end) return false;
-  if (*p == '+' || *p == '-') out.push_back(*p++);
+  if (*p == '+' || *p == '-') out.append(*p++);
   bool sawDigit = false;
   while (p < end && *p >= '0' && *p <= '9') {
     sawDigit = true;
-    out.push_back(*p++);
+    out.append(*p++);
   }
   if (p < end && *p == '.') {
-    out.push_back(*p++);
+    out.append(*p++);
     while (p < end && *p >= '0' && *p <= '9') {
       sawDigit = true;
-      out.push_back(*p++);
+      out.append(*p++);
     }
   }
   return sawDigit || !out.empty();
 }
 
-bool readName(char*& p, char* end, std::string& out) {
+template <size_t N>
+bool readNameFs(char*& p, char* end, PdfFixedString<N>& out) {
   out.clear();
   if (p >= end || *p != '/') return false;
   ++p;
@@ -596,23 +595,24 @@ bool readName(char*& p, char* end, std::string& out) {
       const int a = hexv(h1);
       const int b = hexv(h2);
       if (a >= 0 && b >= 0) {
-        out.push_back(static_cast<char>((a << 4) | b));
+        out.append(static_cast<char>((a << 4) | b));
         p += 3;
         continue;
       }
     }
-    out.push_back(c);
+    out.append(c);
     ++p;
   }
   return !out.empty();
 }
 
-bool readOperator(char*& p, char* end, std::string& out) {
+template <size_t N>
+bool readOperatorFs(char*& p, char* end, PdfFixedString<N>& out) {
   out.clear();
   while (p < end) {
     char c = *p;
     if (std::isalpha(static_cast<unsigned char>(c)) || c == '*' || c == '"' || c == '\'') {
-      out.push_back(c);
+      out.append(c);
       ++p;
     } else {
       break;
@@ -738,7 +738,7 @@ bool skipInlineDictionary(char*& p, char* end) {
 }
 
 // Operand count for graphics/text state operators (PDF content stream).
-int popOperandsForOperator(const std::string& op) {
+int popOperandsForOperator(std::string_view op) {
   if (op == "cm" || op == "c") return 6;
   if (op == "re") return 4;
   if (op == "v" || op == "y") return 4;
@@ -751,11 +751,11 @@ int popOperandsForOperator(const std::string& op) {
   return 0;
 }
 
-float toFloat(const std::string& s) { return static_cast<float>(std::strtod(s.c_str(), nullptr)); }
+float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)); }
 
 [[gnu::noinline]] std::string resolveResourcesDict(FsFile& file, const XrefTable& xref, std::string_view pageBody) {
-  static PdfFixedString<PDF_DICT_VALUE_MAX> r;
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  PdfFixedString<PDF_DICT_VALUE_MAX> r;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
   std::string_view currentBody = pageBody;
   for (int depth = 0; depth < 16; ++depth) {
     if (PdfObject::getDictValue("/Resources", currentBody, r)) {
@@ -779,7 +779,7 @@ float toFloat(const std::string& s) { return static_cast<float>(std::strtod(s.c_
 
 [[gnu::noinline]] std::string resolveFontDict(FsFile& file, const XrefTable& xref, std::string_view pageBody) {
   const std::string resBody = resolveResourcesDict(file, xref, pageBody);
-  static PdfFixedString<PDF_DICT_VALUE_MAX> r;
+  PdfFixedString<PDF_DICT_VALUE_MAX> r;
   if (!PdfObject::getDictValue("/Font", resBody, r)) {
     return {};
   }
@@ -794,40 +794,43 @@ float toFloat(const std::string& s) { return static_cast<float>(std::strtod(s.c_
   if (rid == 0) {
     return std::string(r.view());
   }
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
   if (!xref.readDictForObject(file, rid, body)) {
     return std::string(r.view());
   }
   return std::string(body.view());
 }
 
-uint32_t fontObjectIdForName(const std::string& fontDict, const std::string& name) {
-  const std::string key = "/" + name;
+uint32_t resourceObjectIdForName(std::string_view dict, std::string_view name) {
+  if (name.empty()) {
+    return 0;
+  }
   size_t pos = 0;
-  while (pos < fontDict.size()) {
-    pos = fontDict.find(key, pos);
-    if (pos == std::string::npos) {
+  while (pos < dict.size()) {
+    pos = dict.find('/', pos);
+    if (pos == std::string_view::npos) {
       break;
     }
-    if (pos > 0 && fontDict[pos - 1] == '/') {
-      pos += key.size();
+    const size_t keyStart = pos + 1;
+    if (keyStart + name.size() > dict.size() || dict.substr(keyStart, name.size()) != name) {
+      ++pos;
       continue;
     }
-    const size_t afterKey = pos + key.size();
-    if (afterKey < fontDict.size()) {
-      const unsigned char c = static_cast<unsigned char>(fontDict[afterKey]);
+    const size_t afterKey = keyStart + name.size();
+    if (afterKey < dict.size()) {
+      const unsigned char c = static_cast<unsigned char>(dict[afterKey]);
       if (!std::isspace(c) && c != '>' && c != '[' && c != '<' && c != '/') {
-        pos += key.size();
+        pos = afterKey;
         continue;
       }
     }
-    size_t v = pos + key.size();
-    while (v < fontDict.size() && (fontDict[v] == ' ' || fontDict[v] == '\t')) {
+    size_t v = afterKey;
+    while (v < dict.size() && (dict[v] == ' ' || dict[v] == '\t')) {
       ++v;
     }
     char* end = nullptr;
-    const unsigned long id = std::strtoul(fontDict.c_str() + v, &end, 10);
-    if (end == fontDict.c_str() + v) {
+    const unsigned long id = std::strtoul(dict.data() + v, &end, 10);
+    if (end == dict.data() + v) {
       return 0;
     }
     return static_cast<uint32_t>(id);
@@ -835,8 +838,12 @@ uint32_t fontObjectIdForName(const std::string& fontDict, const std::string& nam
   return 0;
 }
 
+uint32_t fontObjectIdForName(std::string_view fontDict, std::string_view name) {
+  return resourceObjectIdForName(fontDict, name);
+}
+
 [[gnu::noinline]] std::string getXObjectDict(std::string_view resourcesBody) {
-  static PdfFixedString<PDF_DICT_VALUE_MAX> out;
+  PdfFixedString<PDF_DICT_VALUE_MAX> out;
   if (!PdfObject::getDictValue("/XObject", resourcesBody, out)) {
     return {};
   }
@@ -852,11 +859,90 @@ struct FontInfo {
   bool hasMap = false;
 };
 
+template <size_t N>
+class NameIdCache {
+  struct Entry {
+    bool used = false;
+    PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> name;
+    uint32_t id = 0;
+  };
+
+  std::array<Entry, N> entries_{};
+
+ public:
+  bool find(std::string_view name, uint32_t& outId) const {
+    for (const auto& entry : entries_) {
+      if (entry.used && entry.name.view() == name) {
+        outId = entry.id;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void put(std::string_view name, uint32_t id) {
+    for (auto& entry : entries_) {
+      if (entry.used && entry.name.view() == name) {
+        entry.id = id;
+        return;
+      }
+    }
+    for (auto& entry : entries_) {
+      if (!entry.used) {
+        if (entry.name.assign(name)) {
+          entry.used = true;
+          entry.id = id;
+        }
+        return;
+      }
+    }
+  }
+};
+
+template <size_t N>
+class FontInfoCache {
+  struct Entry {
+    bool used = false;
+    uint32_t fontId = 0;
+    FontInfo info;
+  };
+
+  std::array<Entry, N> entries_{};
+
+ public:
+  FontInfo* find(uint32_t fontId) {
+    for (auto& entry : entries_) {
+      if (entry.used && entry.fontId == fontId) {
+        return &entry.info;
+      }
+    }
+    return nullptr;
+  }
+
+  FontInfo* put(uint32_t fontId, FontInfo&& info) {
+    for (auto& entry : entries_) {
+      if (entry.used && entry.fontId == fontId) {
+        entry.info = std::move(info);
+        return &entry.info;
+      }
+    }
+    for (auto& entry : entries_) {
+      if (!entry.used) {
+        entry.used = true;
+        entry.fontId = fontId;
+        entry.info = std::move(info);
+        return &entry.info;
+      }
+    }
+    return nullptr;
+  }
+};
+
 [[gnu::noinline]] static void updateCurrentCidMapForFont(FsFile& file, const XrefTable& xref,
-                                                         const std::string& fontDictBody, const std::string& fontName,
+                                                         std::string_view fontDictBody, std::string_view fontName,
                                                          uint8_t& currentFontStyle,
-                                                         std::unordered_map<uint32_t, FontInfo>& fontInfoCache,
-                                                         const ToUnicodeMap*& currentCidMap,
+                                                         FontInfoCache<PDF_MAX_FONT_CID_MAPS>& fontInfoCache,
+                                                         FontInfo& uncachedFontInfo, const ToUnicodeMap*& currentCidMap,
                                                          SimpleFontEncoding& currentSimpleEncoding) {
   const uint32_t fid = fontObjectIdForName(fontDictBody, fontName);
   currentCidMap = nullptr;
@@ -866,7 +952,7 @@ struct FontInfo {
     return;
   }
 
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> fbody;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> fbody;
   if (!xref.readDictForObject(file, fid, fbody)) {
     return;
   }
@@ -878,8 +964,8 @@ struct FontInfo {
   if (usesMacRoman) {
     currentSimpleEncoding = SimpleFontEncoding::MacRoman;
   }
-  auto it = fontInfoCache.find(fid);
-  if (it == fontInfoCache.end()) {
+  FontInfo* cachedInfo = fontInfoCache.find(fid);
+  if (!cachedInfo) {
     FontInfo info;
     if (loadToUnicodeMapForFont(file, xref, fid, info.map) && !info.map.empty()) {
       info.hasMap = true;
@@ -888,48 +974,27 @@ struct FontInfo {
     if (usesMacRoman) {
       info.encoding = SimpleFontEncoding::MacRoman;
     }
-    it = fontInfoCache.insert({fid, std::move(info)}).first;
+    cachedInfo = fontInfoCache.put(fid, std::move(info));
+    if (!cachedInfo) {
+      uncachedFontInfo = std::move(info);
+      cachedInfo = &uncachedFontInfo;
+    }
   }
-  if (it != fontInfoCache.end()) {
-    currentFontStyle = it->second.style;
-    currentSimpleEncoding = it->second.encoding;
-    if (it->second.hasMap) {
-      currentCidMap = &it->second.map;
+  if (cachedInfo) {
+    currentFontStyle = cachedInfo->style;
+    currentSimpleEncoding = cachedInfo->encoding;
+    if (cachedInfo->hasMap) {
+      currentCidMap = &cachedInfo->map;
     }
   }
 }
 
-uint32_t xobjectIdForName(const std::string& xobjDict, const std::string& name) {
-  const std::string key = "/" + name;
-  size_t pos = 0;
-  while (pos < xobjDict.size()) {
-    pos = xobjDict.find(key, pos);
-    if (pos == std::string::npos) break;
-    if (pos > 0 && xobjDict[pos - 1] == '/') {
-      pos += key.size();
-      continue;
-    }
-    const size_t afterKey = pos + key.size();
-    if (afterKey < xobjDict.size()) {
-      const unsigned char c = static_cast<unsigned char>(xobjDict[afterKey]);
-      if (!std::isspace(c) && c != '>' && c != '[' && c != '<' && c != '/') {
-        pos += key.size();
-        continue;
-      }
-    }
-    size_t v = pos + key.size();
-    while (v < xobjDict.size() && (xobjDict[v] == ' ' || xobjDict[v] == '\t')) ++v;
-    char* end = nullptr;
-    const unsigned long id = std::strtoul(xobjDict.c_str() + v, &end, 10);
-    if (end == xobjDict.c_str() + v) return 0;
-    return static_cast<uint32_t>(id);
-  }
-  return 0;
+uint32_t xobjectIdForName(std::string_view xobjDict, std::string_view name) {
+  return resourceObjectIdForName(xobjDict, name);
 }
 
 uint8_t fontStyleFromDict(std::string_view fontDictBody) {
-  static PdfFixedString<PDF_DICT_VALUE_MAX> fontName;
-  fontName.clear();
+  PdfFixedString<PDF_DICT_VALUE_MAX> fontName;
   if (!PdfObject::getDictValue("/BaseFont", fontDictBody, fontName) &&
       !PdfObject::getDictValue("/FontName", fontDictBody, fontName)) {
     return PdfTextStyleRegular;
@@ -951,7 +1016,7 @@ bool fillImageDescriptor(FsFile& file, const XrefTable& xref, uint32_t objId, Pd
   if (off == 0) {
     return false;
   }
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
   uint32_t so = 0;
   uint32_t sl = 0;
   if (!PdfObject::readAt(file, off, body, &so, &sl, &xref)) {
@@ -1016,12 +1081,10 @@ static void appendBounded(std::string& dst, char c, size_t maxBytes = kMaxExtrac
   }
 }
 
-void logTmpRunPushDiagnostics(const TmpRun& run, const std::vector<TmpRun>& runs) {
+void logTmpRunPushDiagnostics(const TmpRun& run, size_t runCount) {
 #if defined(ENABLE_SERIAL_LOG)
-  logSerial.print("[ERR] [PDF] TmpRun push size/cap/text/font/seq=");
-  logSerial.print(static_cast<uint32_t>(runs.size()));
-  logSerial.print(' ');
-  logSerial.print(static_cast<uint32_t>(runs.capacity()));
+  logSerial.print("[ERR] [PDF] TmpRun push size/text/font/seq=");
+  logSerial.print(static_cast<uint32_t>(runCount));
   logSerial.print(' ');
   logSerial.print(static_cast<uint32_t>(run.utf8.size()));
   logSerial.print(' ');
@@ -1037,7 +1100,7 @@ void logTmpRunPushDiagnostics(const TmpRun& run, const std::vector<TmpRun>& runs
   logSerial.println(run.endX);
 #else
   (void)run;
-  (void)runs;
+  (void)runCount;
 #endif
 }
 
@@ -1270,7 +1333,7 @@ static float sameLineThreshold(uint16_t a, uint16_t b) {
   return std::max(4.0f, static_cast<float>(maxFont) * 0.45f);
 }
 
-bool tryMergeTmpRun(std::vector<TmpRun>& runs, const TmpRun& run) {
+bool tryMergeTmpRun(PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS>& runs, const TmpRun& run) {
   if (runs.empty()) {
     return false;
   }
@@ -1300,7 +1363,8 @@ struct BlockPlacementState {
   uint16_t prevFontSize = 0;
 };
 
-void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCounter, BlockPlacementState& placement) {
+void flushTextGroup(PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS>& runs, PdfPage& page, uint32_t& blockCounter,
+                    BlockPlacementState& placement) {
   if (runs.empty()) return;
   auto pushBlock = [&](std::string& block, float y, float endX, uint16_t maxFontSize, uint8_t styleBits) {
     trimUtf8ToByteLimit(block);
@@ -1370,21 +1434,114 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
   runs.clear();
 }
 
+enum class OpTokenKind : uint8_t {
+  Empty,
+  Bytes,
+  Name,
+  Number,
+  ArraySpan,
+};
+
+struct OpToken {
+  OpTokenKind kind = OpTokenKind::Empty;
+  PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> bytes;
+  float number = 0;
+  char* spanStart = nullptr;
+  char* spanEnd = nullptr;
+};
+
+class OpStack {
+  std::array<OpToken, PDF_MAX_OP_STACK> items_{};
+  size_t count_ = 0;
+
+  OpToken& appendSlot() {
+    if (count_ < items_.size()) {
+      return items_[count_++];
+    }
+    for (size_t i = 1; i < items_.size(); ++i) {
+      items_[i - 1] = items_[i];
+    }
+    return items_[items_.size() - 1];
+  }
+
+ public:
+  void clear() { count_ = 0; }
+  bool empty() const { return count_ == 0; }
+  size_t size() const { return count_; }
+  OpToken* back() { return count_ == 0 ? nullptr : &items_[count_ - 1]; }
+
+  void pop() {
+    if (count_ > 0) {
+      --count_;
+      items_[count_] = OpToken{};
+    }
+  }
+
+  bool pushBytes(const PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES>& bytes) {
+    OpToken& token = appendSlot();
+    token = OpToken{};
+    token.kind = OpTokenKind::Bytes;
+    return token.bytes.assign(bytes.view());
+  }
+
+  bool pushName(const PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES>& name) {
+    OpToken& token = appendSlot();
+    token = OpToken{};
+    token.kind = OpTokenKind::Name;
+    return token.bytes.assign(name.view());
+  }
+
+  bool pushNumber(float number) {
+    OpToken& token = appendSlot();
+    token = OpToken{};
+    token.kind = OpTokenKind::Number;
+    token.number = number;
+    return true;
+  }
+
+  bool pushArray(char* start, char* end) {
+    OpToken& token = appendSlot();
+    token = OpToken{};
+    token.kind = OpTokenKind::ArraySpan;
+    token.spanStart = start;
+    token.spanEnd = end;
+    return true;
+  }
+
+  bool pushEmpty() {
+    appendSlot() = OpToken{};
+    return true;
+  }
+
+  bool popNumber(float& out) {
+    OpToken* token = back();
+    if (!token) {
+      return false;
+    }
+    if (token->kind == OpTokenKind::Number) {
+      out = token->number;
+    } else {
+      out = toFloat(token->bytes.c_str());
+    }
+    pop();
+    return true;
+  }
+};
+
 bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref, std::string_view pageObjectBody,
                          PdfPage& outPage) {
   const std::string resBody = resolveResourcesDict(file, xref, pageObjectBody);
   const std::string xobjDict = getXObjectDict(resBody);
   const std::string fontDictBody = resolveFontDict(file, xref, pageObjectBody);
-  std::unordered_map<uint32_t, FontInfo> fontInfoCache;
-  std::unordered_map<std::string, uint32_t> fontNameCache;
-  std::unordered_map<std::string, uint32_t> xobjNameCache;
-  fontInfoCache.reserve(16);
-  fontNameCache.reserve(8);
-  xobjNameCache.reserve(8);
+  FontInfoCache<PDF_MAX_FONT_CID_MAPS> fontInfoCache;
+  FontInfo uncachedFontInfo;
+  NameIdCache<PDF_MAX_OP_STACK> fontNameCache;
+  NameIdCache<PDF_MAX_OP_STACK> xobjNameCache;
   const ToUnicodeMap* currentCidMap = nullptr;
   SimpleFontEncoding currentSimpleFontEncoding = SimpleFontEncoding::WinAnsi;
   PdfMatrix currentCtm;
-  std::vector<PdfMatrix> ctmStack;
+  std::array<PdfMatrix, PDF_MAX_OP_STACK> ctmStack{};
+  size_t ctmStackSize = 0;
 
   float textX = 0;
   float textY = 0;
@@ -1393,12 +1550,8 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   uint16_t currentFontSize = 0;
   uint32_t textBlockCounter = 0;
   uint32_t seqCounter = 0;
-  std::vector<TmpRun> runs;
-  runs.reserve(PDF_MAX_TMP_RUNS);
-  std::vector<std::string> stack;
-  char* pendingArrayStart = nullptr;
-  char* pendingArrayEnd = nullptr;
-  size_t pendingArrayStackIndex = std::string::npos;
+  PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS> runs;
+  OpStack stack;
   BlockPlacementState placement;
   auto emitRun = [&](TmpRun&& run) {
     if (run.utf8.empty()) {
@@ -1410,10 +1563,9 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
     if (runs.size() >= PDF_MAX_TMP_RUNS) {
       flushTextGroup(runs, outPage, textBlockCounter, placement);
     }
-    if (runs.size() == runs.capacity()) {
-      logTmpRunPushDiagnostics(run, runs);
+    if (!runs.push_back(std::move(run))) {
+      logTmpRunPushDiagnostics(run, runs.size());
     }
-    runs.push_back(std::move(run));
   };
 
   while (p < end) {
@@ -1421,144 +1573,138 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
     if (p >= end) break;
 
     if (*p == '(') {
-      std::string raw;
-      if (!readPdfStringLiteral(p, end, raw)) break;
-      stack.push_back(std::move(raw));
+      PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> raw;
+      if (!readPdfStringLiteralFs(p, end, raw)) break;
+      stack.pushBytes(raw);
       continue;
     }
     if (*p == '<' && p + 1 < end && p[1] == '<') {
       if (!skipInlineDictionary(p, end)) break;
-      stack.push_back(std::string());
+      stack.pushEmpty();
       continue;
     }
     if (*p == '<' && p + 1 < end && p[1] != '<') {
-      std::string raw;
-      if (!readHexString(p, end, raw)) break;
-      stack.push_back(std::move(raw));
+      PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> raw;
+      if (!readHexStringFs(p, end, raw)) break;
+      stack.pushBytes(raw);
       continue;
     }
     if (*p == '[') {
       char* arrStart = nullptr;
       char* arrEnd = nullptr;
       if (!readArraySpan(p, end, arrStart, arrEnd)) break;
-      stack.emplace_back();
-      pendingArrayStart = arrStart;
-      pendingArrayEnd = arrEnd;
-      pendingArrayStackIndex = stack.size() - 1;
+      stack.pushArray(arrStart, arrEnd);
       continue;
     }
     if (*p == '/' && (p + 1 >= end || p[1] != '/')) {
-      std::string name;
-      if (!readName(p, end, name)) break;
-      stack.push_back(name);
+      PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> name;
+      if (!readNameFs(p, end, name)) break;
+      stack.pushName(name);
       continue;
     }
     if ((*p >= '0' && *p <= '9') || *p == '-' || *p == '+' ||
         (*p == '.' && p + 1 < end && p[1] >= '0' && p[1] <= '9')) {
-      std::string num;
-      if (!readNumber(p, end, num)) break;
-      stack.push_back(std::move(num));
+      PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> num;
+      if (!readNumberFs(p, end, num)) break;
+      stack.pushNumber(toFloat(num.c_str()));
       continue;
     }
 
-    std::string op;
-    if (!readOperator(p, end, op)) {
+    PdfFixedString<8> op;
+    if (!readOperatorFs(p, end, op)) {
       ++p;
       continue;
     }
+    const std::string_view opView = op.view();
 
-    if (op == "BT") {
+    if (opView == "BT") {
       stack.clear();
       runs.clear();
       textX = textY = 0;
       lineSpacing = 0;
-    } else if (op == "ET") {
+    } else if (opView == "ET") {
       flushTextGroup(runs, outPage, textBlockCounter, placement);
-    } else if (op == "Tm" && stack.size() >= 6) {
-      const float f = toFloat(stack.back());
-      stack.pop_back();
-      const float e = toFloat(stack.back());
-      stack.pop_back();
-      stack.pop_back();
-      stack.pop_back();
-      stack.pop_back();
-      stack.pop_back();
+    } else if (opView == "Tm" && stack.size() >= 6) {
+      float f = 0;
+      float e = 0;
+      stack.popNumber(f);
+      stack.popNumber(e);
+      stack.pop();
+      stack.pop();
+      stack.pop();
+      stack.pop();
       textX = e;
       textY = f;
-    } else if (op == "cm" && stack.size() >= 6) {
+    } else if (opView == "cm" && stack.size() >= 6) {
       PdfMatrix m;
-      m.f = toFloat(stack.back());
-      stack.pop_back();
-      m.e = toFloat(stack.back());
-      stack.pop_back();
-      m.d = toFloat(stack.back());
-      stack.pop_back();
-      m.c = toFloat(stack.back());
-      stack.pop_back();
-      m.b = toFloat(stack.back());
-      stack.pop_back();
-      m.a = toFloat(stack.back());
-      stack.pop_back();
+      stack.popNumber(m.f);
+      stack.popNumber(m.e);
+      stack.popNumber(m.d);
+      stack.popNumber(m.c);
+      stack.popNumber(m.b);
+      stack.popNumber(m.a);
       currentCtm = multiplyMatrix(currentCtm, m);
-    } else if (op == "q") {
-      ctmStack.push_back(currentCtm);
-    } else if (op == "Q") {
-      if (!ctmStack.empty()) {
-        currentCtm = ctmStack.back();
-        ctmStack.pop_back();
+    } else if (opView == "q") {
+      if (ctmStackSize < ctmStack.size()) {
+        ctmStack[ctmStackSize++] = currentCtm;
+      }
+    } else if (opView == "Q") {
+      if (ctmStackSize > 0) {
+        currentCtm = ctmStack[--ctmStackSize];
       } else {
         currentCtm = PdfMatrix{};
       }
-    } else if (op == "Td" && stack.size() >= 2) {
-      const float dy = toFloat(stack.back());
-      stack.pop_back();
-      const float dx = toFloat(stack.back());
-      stack.pop_back();
+    } else if (opView == "Td" && stack.size() >= 2) {
+      float dy = 0;
+      float dx = 0;
+      stack.popNumber(dy);
+      stack.popNumber(dx);
       textX += dx;
       textY += dy;
-    } else if (op == "TD" && stack.size() >= 2) {
-      const float dy = toFloat(stack.back());
-      stack.pop_back();
-      const float dx = toFloat(stack.back());
-      stack.pop_back();
+    } else if (opView == "TD" && stack.size() >= 2) {
+      float dy = 0;
+      float dx = 0;
+      stack.popNumber(dy);
+      stack.popNumber(dx);
       lineSpacing = -dy;
       textX += dx;
       textY += dy;
-    } else if (op == "T*") {
+    } else if (opView == "T*") {
       textY -= lineSpacing;
-    } else if (op == "Tj" && !stack.empty()) {
-      const std::string raw = std::move(stack.back());
-      stack.pop_back();
+    } else if (opView == "Tj" && !stack.empty()) {
+      OpToken* raw = stack.back();
+      if (!raw || raw->kind != OpTokenKind::Bytes) {
+        stack.pop();
+        continue;
+      }
       TmpRun r;
       transformPoint(currentCtm, textX, textY, r.x, r.y);
       r.style = currentFontStyle;
       r.fontSize = currentFontSize;
       r.seq = seqCounter++;
-      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
-                                     currentSimpleFontEncoding);
+      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw->bytes.data()), raw->bytes.size(),
+                                     currentCidMap, currentSimpleFontEncoding);
       r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
       textX += estimateTextAdvance(r.utf8, r.fontSize);
+      stack.pop();
       emitRun(std::move(r));
-    } else if (op == "TJ" && !stack.empty()) {
-      const bool hasArraySpan = pendingArrayStart && pendingArrayEnd && pendingArrayStackIndex == stack.size() - 1;
-      std::string arr;
-      if (!hasArraySpan) {
-        arr = std::move(stack.back());
+    } else if (opView == "TJ" && !stack.empty()) {
+      OpToken* arrToken = stack.back();
+      if (!arrToken || arrToken->kind != OpTokenKind::ArraySpan) {
+        stack.pop();
+        continue;
       }
-      stack.pop_back();
-      char* q = hasArraySpan ? pendingArrayStart : arr.data();
-      char* qend = hasArraySpan ? pendingArrayEnd : (q + arr.size());
-      pendingArrayStart = nullptr;
-      pendingArrayEnd = nullptr;
-      pendingArrayStackIndex = std::string::npos;
+      char* q = arrToken->spanStart;
+      char* qend = arrToken->spanEnd;
+      stack.pop();
       skipWsComment(q, qend);
       if (q < qend && *q == '[') ++q;
       while (q < qend) {
         skipWsComment(q, qend);
         if (q >= qend || *q == ']') break;
         if (*q == '(') {
-          std::string raw;
-          if (!readPdfStringLiteral(q, qend, raw)) break;
+          PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> raw;
+          if (!readPdfStringLiteralFs(q, qend, raw)) break;
           TmpRun r;
           transformPoint(currentCtm, textX, textY, r.x, r.y);
           r.style = currentFontStyle;
@@ -1570,8 +1716,8 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
           textX += estimateTextAdvance(r.utf8, r.fontSize);
           emitRun(std::move(r));
         } else if (*q == '<' && q + 1 < qend && q[1] != '<') {
-          std::string raw;
-          if (!readHexString(q, qend, raw)) break;
+          PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> raw;
+          if (!readHexStringFs(q, qend, raw)) break;
           TmpRun r;
           transformPoint(currentCtm, textX, textY, r.x, r.y);
           r.style = currentFontStyle;
@@ -1583,51 +1729,66 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
           textX += estimateTextAdvance(r.utf8, r.fontSize);
           emitRun(std::move(r));
         } else if ((*q >= '0' && *q <= '9') || *q == '-' || *q == '+' || *q == '.') {
-          std::string num;
-          readNumber(q, qend, num);
-          textX += textAdjustmentToUserSpace(toFloat(num), currentFontSize);
+          PdfFixedString<PDF_MAX_STACK_TOKEN_BYTES> num;
+          readNumberFs(q, qend, num);
+          textX += textAdjustmentToUserSpace(toFloat(num.c_str()), currentFontSize);
         } else {
           ++q;
         }
       }
-    } else if ((op == "'" || op == "\"") && !stack.empty()) {
+    } else if ((opView == "'" || opView == "\"") && !stack.empty()) {
       textY -= lineSpacing;
-      const std::string raw = std::move(stack.back());
-      stack.pop_back();
+      OpToken* raw = stack.back();
+      if (!raw || raw->kind != OpTokenKind::Bytes) {
+        stack.pop();
+        continue;
+      }
       TmpRun r;
       transformPoint(currentCtm, textX, textY, r.x, r.y);
       r.style = currentFontStyle;
       r.fontSize = currentFontSize;
       r.seq = seqCounter++;
-      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw.data()), raw.size(), currentCidMap,
-                                     currentSimpleFontEncoding);
+      r.utf8 = bytesToUtf8WithCidMap(reinterpret_cast<const uint8_t*>(raw->bytes.data()), raw->bytes.size(),
+                                     currentCidMap, currentSimpleFontEncoding);
       r.endX = r.x + estimateTextAdvance(r.utf8, r.fontSize);
       textX += estimateTextAdvance(r.utf8, r.fontSize);
+      stack.pop();
       emitRun(std::move(r));
-    } else if (op == "Tf" && stack.size() >= 2) {
-      currentFontSize = static_cast<uint16_t>(std::max(0.0f, toFloat(stack.back())));
-      stack.pop_back();
-      const std::string fontName = stack.back();
-      stack.pop_back();
-      auto fontIdIt = fontNameCache.find(fontName);
-      if (fontIdIt == fontNameCache.end()) {
-        const uint32_t fontId = fontObjectIdForName(fontDictBody, fontName);
-        fontIdIt = fontNameCache.emplace(fontName, fontId).first;
-      }
-      if (fontIdIt->second == 0) {
+    } else if (opView == "Tf" && stack.size() >= 2) {
+      float fontSize = 0;
+      stack.popNumber(fontSize);
+      currentFontSize = static_cast<uint16_t>(std::max(0.0f, fontSize));
+      OpToken* fontNameToken = stack.back();
+      if (!fontNameToken || fontNameToken->kind != OpTokenKind::Name) {
+        stack.pop();
         continue;
       }
-      updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontInfoCache, currentCidMap,
-                                 currentSimpleFontEncoding);
-    } else if (op == "Do" && !stack.empty()) {
-      const std::string name = stack.back();
-      stack.pop_back();
-      auto xobjIt = xobjNameCache.find(name);
-      if (xobjIt == xobjNameCache.end()) {
-        const uint32_t xobjId = xobjectIdForName(xobjDict, name);
-        xobjIt = xobjNameCache.emplace(name, xobjId).first;
+      const std::string_view fontName = fontNameToken->bytes.view();
+      uint32_t fontId = 0;
+      if (!fontNameCache.find(fontName, fontId)) {
+        fontId = fontObjectIdForName(fontDictBody, fontName);
+        fontNameCache.put(fontName, fontId);
       }
-      const uint32_t xid = xobjIt->second;
+      if (fontId == 0) {
+        stack.pop();
+        continue;
+      }
+      updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontInfoCache, uncachedFontInfo,
+                                 currentCidMap, currentSimpleFontEncoding);
+      stack.pop();
+    } else if (opView == "Do" && !stack.empty()) {
+      OpToken* nameToken = stack.back();
+      if (!nameToken || nameToken->kind != OpTokenKind::Name) {
+        stack.pop();
+        continue;
+      }
+      const std::string_view name = nameToken->bytes.view();
+      uint32_t xid = 0;
+      if (!xobjNameCache.find(name, xid)) {
+        xid = xobjectIdForName(xobjDict, name);
+        xobjNameCache.put(name, xid);
+      }
+      stack.pop();
       if (xid != 0) {
         PdfImageDescriptor img{};
         if (fillImageDescriptor(file, xref, xid, img)) {
@@ -1635,21 +1796,16 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
           outPage.drawOrder.push_back({true, static_cast<uint32_t>(outPage.images.size() - 1)});
         }
       }
-    } else if (op == "BDC" && stack.size() >= 2) {
-      stack.pop_back();
-      stack.pop_back();
-    } else if (op == "EMC" || op == "BMC") {
-    } else if ((op == "MP" || op == "DP") && !stack.empty()) {
-      stack.pop_back();
+    } else if (opView == "BDC" && stack.size() >= 2) {
+      stack.pop();
+      stack.pop();
+    } else if (opView == "EMC" || opView == "BMC") {
+    } else if ((opView == "MP" || opView == "DP") && !stack.empty()) {
+      stack.pop();
     } else {
-      const int n = popOperandsForOperator(op);
+      const int n = popOperandsForOperator(opView);
       if (n > 0 && stack.size() >= static_cast<size_t>(n)) {
-        for (int i = 0; i < n; ++i) stack.pop_back();
-      }
-      if (pendingArrayStackIndex >= stack.size()) {
-        pendingArrayStart = nullptr;
-        pendingArrayEnd = nullptr;
-        pendingArrayStackIndex = std::string::npos;
+        for (int i = 0; i < n; ++i) stack.pop();
       }
     }
   }

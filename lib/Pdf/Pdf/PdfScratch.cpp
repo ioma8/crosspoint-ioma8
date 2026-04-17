@@ -9,6 +9,15 @@ namespace {
 ToUnicodeWorkspace* g_toUnicodeWorkspace = nullptr;
 bool g_toUnicodeWorkspaceInUse = false;
 
+void freeWorkspaceIfIdle() {
+  if (g_toUnicodeWorkspaceInUse || !g_toUnicodeWorkspace) {
+    return;
+  }
+  g_toUnicodeWorkspace->~ToUnicodeWorkspace();
+  std::free(g_toUnicodeWorkspace);
+  g_toUnicodeWorkspace = nullptr;
+}
+
 }  // namespace
 
 ToUnicodeWorkspace* acquireToUnicodeWorkspace() {
@@ -26,16 +35,12 @@ ToUnicodeWorkspace* acquireToUnicodeWorkspace() {
   return g_toUnicodeWorkspace;
 }
 
-void releaseToUnicodeWorkspaceUse() { g_toUnicodeWorkspaceInUse = false; }
-
-void releaseRetainedBuffers() {
-  if (g_toUnicodeWorkspaceInUse || !g_toUnicodeWorkspace) {
-    return;
-  }
-  g_toUnicodeWorkspace->~ToUnicodeWorkspace();
-  std::free(g_toUnicodeWorkspace);
-  g_toUnicodeWorkspace = nullptr;
+void releaseToUnicodeWorkspaceUse() {
+  g_toUnicodeWorkspaceInUse = false;
+  freeWorkspaceIfIdle();
 }
+
+void releaseRetainedBuffers() { freeWorkspaceIfIdle(); }
 
 size_t retainedBufferBytes() { return g_toUnicodeWorkspace ? sizeof(ToUnicodeWorkspace) : 0; }
 
