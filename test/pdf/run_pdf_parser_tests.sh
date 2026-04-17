@@ -37,13 +37,14 @@ SOURCES=(
   "lib/Pdf/Pdf/PdfObject.cpp"
   "lib/Pdf/Pdf/PageTree.cpp"
   "lib/Pdf/Pdf/StreamDecoder.cpp"
+  "lib/Pdf/Pdf/PdfScratch.cpp"
   "lib/Pdf/Pdf/ContentStream.cpp"
   "lib/Pdf/Pdf/PdfOutline.cpp"
   "lib/InflateReader/InflateReader.cpp"
   "test/pdf/pdf_parser_host_test.cpp"
 )
 
-$CXX $STD -Wall -Wextra -O2 "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" "${SOURCES[@]}" "$OUT_DIR/tinflate.o" "$OUT_DIR/uzlib_checksum_stubs.o" \
+$CXX $STD -Wall -Wextra -Wno-mismatched-new-delete -O2 "${COMMON_FLAGS[@]}" "${INCLUDES[@]}" "${SOURCES[@]}" "$OUT_DIR/tinflate.o" "$OUT_DIR/uzlib_checksum_stubs.o" \
   -lz -o "$OUT_DIR/pdf_parser_host_test"
 
 if [[ $# -eq 0 ]]; then

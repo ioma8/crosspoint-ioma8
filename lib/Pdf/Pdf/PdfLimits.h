@@ -141,7 +141,7 @@
 #endif
 
 #ifndef PDF_MAX_CID_MAP_ENTRIES
-#define PDF_MAX_CID_MAP_ENTRIES 32
+#define PDF_MAX_CID_MAP_ENTRIES 128
 #endif
 
 // Classic xref merge: one slot per chain depth (see XrefTable.cpp).

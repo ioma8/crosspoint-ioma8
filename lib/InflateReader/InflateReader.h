@@ -15,7 +15,7 @@ enum class InflateStatus {
 //
 // Two modes:
 //   init(false)  — one-shot: input is a contiguous buffer, call read() once.
-//   init(true)   — streaming: allocates a small ring buffer for back-references
+//   init(true)   — streaming: borrows a shared ring buffer for back-references
 //                  across multiple read() / readAtMost() calls.
 //
 // Streaming callback pattern:
@@ -44,13 +44,17 @@ class InflateReader {
   InflateReader(const InflateReader&) = delete;
   InflateReader& operator=(const InflateReader&) = delete;
 
-  // Initialise decompressor. streaming=true allocates a bounded ring buffer needed
-  // when read() or readAtMost() will be called multiple times.
-  // Returns false only in streaming mode if the ring buffer allocation fails.
+  // Initialise decompressor. streaming=true borrows a bounded shared ring buffer
+  // needed when read() or readAtMost() will be called multiple times.
+  // Returns false only in streaming mode if that shared buffer is already in use.
   bool init(bool streaming = false);
 
   // Release the ring buffer and reset internal state.
   void deinit();
+
+  // Release the shared streaming buffer when no streaming reader is active.
+  static void releaseSharedBuffer();
+  static size_t retainedSharedBufferBytes();
 
   // Set the entire compressed input as a contiguous memory buffer.
   // Used in one-shot mode; not needed when a read callback is set.
@@ -82,4 +86,5 @@ class InflateReader {
  private:
   uzlib_uncomp decomp = {};
   uint8_t* ringBuffer = nullptr;
+  bool usingSharedRingBuffer = false;
 };

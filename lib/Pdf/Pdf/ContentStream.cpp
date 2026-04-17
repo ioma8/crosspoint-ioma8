@@ -11,8 +11,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "PdfFixed.h"
 #include "PdfLimits.h"
 #include "PdfObject.h"
+#include "PdfScratch.h"
 #include "StreamDecoder.h"
 
 namespace {
@@ -105,9 +107,76 @@ std::string pdfBytesToUtf8(const uint8_t* data, size_t len, SimpleFontEncoding e
 }
 
 struct ToUnicodeMap {
-  std::unordered_map<uint16_t, std::string> glyphs;
+  struct Entry {
+    uint16_t cid = 0;
+    PdfFixedString<16> utf8;
+  };
+  struct Range {
+    uint16_t srcFirst = 0;
+    uint16_t srcLast = 0;
+    uint16_t dstFirst = 0;
+  };
 
-  bool empty() const { return glyphs.empty(); }
+  PdfFixedVector<Entry, PDF_MAX_CID_MAP_ENTRIES> glyphs;
+  PdfFixedVector<Range, PDF_MAX_CID_MAP_ENTRIES> ranges;
+
+  void clear() {
+    glyphs.clear();
+    ranges.clear();
+  }
+  bool empty() const { return glyphs.empty() && ranges.empty(); }
+
+  bool has(uint16_t cid) const {
+    for (const auto& entry : glyphs) {
+      if (entry.cid == cid && !entry.utf8.empty()) {
+        return true;
+      }
+    }
+    for (const auto& range : ranges) {
+      if (cid >= range.srcFirst && cid <= range.srcLast) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool appendMapped(uint16_t cid, std::string& out) const {
+    for (const auto& entry : glyphs) {
+      if (entry.cid == cid && !entry.utf8.empty()) {
+        out += entry.utf8.c_str();
+        return true;
+      }
+    }
+    for (const auto& range : ranges) {
+      if (cid >= range.srcFirst && cid <= range.srcLast) {
+        appendUtf8(out, static_cast<uint16_t>(range.dstFirst + (cid - range.srcFirst)));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool put(uint16_t cid, std::string_view utf8) {
+    for (auto& entry : glyphs) {
+      if (entry.cid == cid) {
+        return entry.utf8.assign(utf8);
+      }
+    }
+    Entry entry;
+    entry.cid = cid;
+    if (!entry.utf8.assign(utf8)) {
+      return false;
+    }
+    return glyphs.push_back(entry);
+  }
+
+  bool putRange(uint16_t srcFirst, uint16_t srcLast, uint16_t dstFirst) {
+    Range range;
+    range.srcFirst = srcFirst;
+    range.srcLast = srcLast;
+    range.dstFirst = dstFirst;
+    return ranges.push_back(range);
+  }
 };
 
 static int hexDigitVal(char c) {
@@ -123,18 +192,25 @@ static int hexDigitVal(char c) {
   return -1;
 }
 
-static std::string utf16BeHexToUtf8(const std::string& hex) {
+static std::string utf16BeHexToUtf8(std::string_view hex) {
   std::string out;
   if (hex.size() < 2 || (hex.size() % 2) != 0) {
     return out;
   }
-  for (size_t i = 0; i + 1 < hex.size(); i += 2) {
-    const int hi = hexDigitVal(hex[i]);
-    const int lo = hexDigitVal(hex[i + 1]);
-    if (hi < 0 || lo < 0) {
+  const size_t step = (hex.size() % 4) == 0 ? 4 : 2;
+  for (size_t i = 0; i + step - 1 < hex.size(); i += step) {
+    uint16_t cu = 0;
+    for (size_t j = 0; j < step; ++j) {
+      const int digit = hexDigitVal(hex[i + j]);
+      if (digit < 0) {
+        cu = 0;
+        break;
+      }
+      cu = static_cast<uint16_t>((cu << 4) | static_cast<uint16_t>(digit));
+    }
+    if (cu == 0) {
       continue;
     }
-    const uint16_t cu = static_cast<uint16_t>((hi << 4) | lo);
     if (cu >= 0xD800 && cu <= 0xDFFF) {
       continue;
     }
@@ -144,21 +220,26 @@ static std::string utf16BeHexToUtf8(const std::string& hex) {
 }
 
 // Parse PDF ToUnicode CMap (beginbfchar / beginbfrange); enough for common Identity-H fonts.
-static bool parseToUnicodeCMap(const std::string& cmap, ToUnicodeMap& out) {
-  out.glyphs.clear();
+static bool parseToUnicodeCMap(std::string_view cmap, ToUnicodeMap& out) {
+  out.clear();
   enum class Mode { None, BfChar, BfRange };
   Mode mode = Mode::None;
-  std::istringstream iss(cmap);
-  std::string line;
-  while (std::getline(iss, line)) {
+  size_t lineStart = 0;
+  while (lineStart < cmap.size()) {
+    size_t lineEnd = cmap.find('\n', lineStart);
+    if (lineEnd == std::string_view::npos) {
+      lineEnd = cmap.size();
+    }
+    std::string_view line = cmap.substr(lineStart, lineEnd - lineStart);
+    lineStart = lineEnd + 1;
     if (!line.empty() && line.back() == '\r') {
-      line.pop_back();
+      line.remove_suffix(1);
     }
     size_t p = 0;
     while (p < line.size() && std::isspace(static_cast<unsigned char>(line[p]))) {
       ++p;
     }
-    const std::string t = line.substr(p);
+    const std::string_view t = line.substr(p);
     if (t.find("beginbfchar") != std::string::npos) {
       mode = Mode::BfChar;
       continue;
@@ -198,17 +279,24 @@ static bool parseToUnicodeCMap(const std::string& cmap, ToUnicodeMap& out) {
       if (d == std::string::npos) {
         continue;
       }
-      const std::string srcHex = t.substr(a + 1, b - a - 1);
-      const std::string dstHex = t.substr(c + 1, d - c - 1);
+      const std::string_view srcHex = t.substr(a + 1, b - a - 1);
+      const std::string_view dstHex = t.substr(c + 1, d - c - 1);
       if ((srcHex.size() % 2) != 0 || srcHex.empty() || srcHex.size() > 4) {
         continue;
       }
-      char* e0 = nullptr;
-      const unsigned long cid = std::strtoul(srcHex.c_str(), &e0, 16);
-      if (e0 == srcHex.c_str()) {
+      uint32_t cid = 0;
+      for (const char ch : srcHex) {
+        const int digit = hexDigitVal(ch);
+        if (digit < 0) {
+          cid = 0x10000UL;
+          break;
+        }
+        cid = (cid << 4) | static_cast<uint32_t>(digit);
+      }
+      if (cid > 0xFFFFUL) {
         continue;
       }
-      out.glyphs[static_cast<uint16_t>(cid)] = utf16BeHexToUtf8(dstHex);
+      out.put(static_cast<uint16_t>(cid), utf16BeHexToUtf8(dstHex));
     } else if (mode == Mode::BfRange) {
       const size_t a = t.find('<');
       if (a == std::string::npos) {
@@ -223,19 +311,27 @@ static bool parseToUnicodeCMap(const std::string& cmap, ToUnicodeMap& out) {
           e == std::string::npos || f == std::string::npos) {
         continue;
       }
-      const std::string h1 = t.substr(a + 1, b - a - 1);
-      const std::string h2 = t.substr(c + 1, d - c - 1);
-      const std::string h3 = t.substr(e + 1, f - e - 1);
+      const std::string_view h1 = t.substr(a + 1, b - a - 1);
+      const std::string_view h2 = t.substr(c + 1, d - c - 1);
+      const std::string_view h3 = t.substr(e + 1, f - e - 1);
       if ((h1.size() % 2) != 0 || h1.empty() || h1.size() > 4 || h1.size() != h2.size() || h3.size() != h1.size()) {
         continue;
       }
-      char* e1 = nullptr;
-      char* e2 = nullptr;
-      char* e3 = nullptr;
-      const unsigned long v1 = std::strtoul(h1.c_str(), &e1, 16);
-      const unsigned long v2 = std::strtoul(h2.c_str(), &e2, 16);
-      const unsigned long v3 = std::strtoul(h3.c_str(), &e3, 16);
-      if (e1 == h1.c_str() || e2 == h2.c_str() || e3 == h3.c_str()) {
+      auto parseHex = [](std::string_view hex, uint32_t& outValue) {
+        outValue = 0;
+        for (const char ch : hex) {
+          const int digit = hexDigitVal(ch);
+          if (digit < 0) {
+            return false;
+          }
+          outValue = (outValue << 4) | static_cast<uint32_t>(digit);
+        }
+        return true;
+      };
+      uint32_t v1 = 0;
+      uint32_t v2 = 0;
+      uint32_t v3 = 0;
+      if (!parseHex(h1, v1) || !parseHex(h2, v2) || !parseHex(h3, v3)) {
         continue;
       }
       if (v1 > 0xFFFFUL || v2 > 0xFFFFUL || v3 > 0xFFFFUL || v2 < v1) {
@@ -244,15 +340,8 @@ static bool parseToUnicodeCMap(const std::string& cmap, ToUnicodeMap& out) {
       const uint16_t srcFirst = static_cast<uint16_t>(v1);
       const uint16_t srcLast = static_cast<uint16_t>(v2);
       const uint16_t dstFirst = static_cast<uint16_t>(v3);
-      for (uint32_t k = 0; k <= static_cast<uint32_t>(srcLast - srcFirst); ++k) {
-        const uint16_t cid = static_cast<uint16_t>(srcFirst + k);
-        const uint32_t u = static_cast<uint32_t>(dstFirst) + k;
-        if (u > 0xFFFFU) {
-          break;
-        }
-        std::string one;
-        appendUtf8(one, static_cast<uint16_t>(u));
-        out.glyphs[cid] = std::move(one);
+      if (static_cast<uint32_t>(dstFirst) + static_cast<uint32_t>(srcLast - srcFirst) <= 0xFFFFU) {
+        out.putRange(srcFirst, srcLast, dstFirst);
       }
     }
   }
@@ -261,34 +350,46 @@ static bool parseToUnicodeCMap(const std::string& cmap, ToUnicodeMap& out) {
 
 [[gnu::noinline]] static bool loadToUnicodeMapForFont(FsFile& file, const XrefTable& xref, uint32_t fontObjId,
                                                       ToUnicodeMap& out) {
-  out.glyphs.clear();
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-  if (!xref.readDictForObject(file, fontObjId, body)) {
+  out.clear();
+  PdfScratch::ToUnicodeWorkspace* workspace = PdfScratch::acquireToUnicodeWorkspace();
+  if (!workspace) {
     return false;
   }
-  const uint32_t tuId = PdfObject::getDictRef("/ToUnicode", body.view());
+
+  auto releaseWorkspace = [] { PdfScratch::releaseToUnicodeWorkspaceUse(); };
+
+  if (!xref.readDictForObject(file, fontObjId, workspace->body)) {
+    releaseWorkspace();
+    return false;
+  }
+  const uint32_t tuId = PdfObject::getDictRef("/ToUnicode", workspace->body.view());
   if (tuId == 0) {
+    releaseWorkspace();
     return false;
   }
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> cmapDict;
-  static PdfByteBuffer payload;
+  workspace->payload.clear();
+  workspace->decoded.clear();
   bool flate = false;
-  if (!xref.readStreamForObject(file, tuId, cmapDict, payload, flate)) {
+  if (!xref.readStreamForObject(file, tuId, workspace->cmapDict, workspace->payload, flate)) {
+    releaseWorkspace();
     return false;
   }
-  static PdfByteBuffer decoded;
   size_t got = 0;
   if (flate) {
-    got = StreamDecoder::flateDecodeBytes(payload.ptr(), payload.len, decoded.ptr(), decoded.data.size());
+    got = StreamDecoder::flateDecodeBytes(workspace->payload.ptr(), workspace->payload.len, workspace->decoded.ptr(),
+                                          workspace->decoded.data.size());
   } else {
-    got = std::min(payload.len, decoded.data.size());
-    std::memcpy(decoded.ptr(), payload.ptr(), got);
+    got = std::min(workspace->payload.len, workspace->decoded.data.size());
+    std::memcpy(workspace->decoded.ptr(), workspace->payload.ptr(), got);
   }
   if (got == 0) {
+    releaseWorkspace();
     return false;
   }
-  const std::string cmap(reinterpret_cast<const char*>(decoded.ptr()), got);
-  return parseToUnicodeCMap(cmap, out);
+  const bool parsed =
+      parseToUnicodeCMap(std::string_view(reinterpret_cast<const char*>(workspace->decoded.ptr()), got), out);
+  releaseWorkspace();
+  return parsed;
 }
 
 static std::string bytesToUtf8WithCidMap(const uint8_t* data, size_t len, const ToUnicodeMap* map,
@@ -306,8 +407,7 @@ static std::string bytesToUtf8WithCidMap(const uint8_t* data, size_t len, const 
       const uint16_t cid =
           step == 1 ? static_cast<uint16_t>(data[i])
                     : static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | static_cast<uint8_t>(data[i + 1]));
-      const auto it = map->glyphs.find(cid);
-      if (it != map->glyphs.end() && !it->second.empty()) {
+      if (map->has(cid)) {
         ++hits;
       }
     }
@@ -327,9 +427,7 @@ static std::string bytesToUtf8WithCidMap(const uint8_t* data, size_t len, const 
     const uint16_t cid =
         step == 1 ? static_cast<uint16_t>(data[i])
                   : static_cast<uint16_t>((static_cast<uint16_t>(data[i]) << 8) | static_cast<uint8_t>(data[i + 1]));
-    const auto it = map->glyphs.find(cid);
-    if (it != map->glyphs.end() && !it->second.empty()) {
-      out += it->second;
+    if (map->appendMapped(cid, out)) {
     } else {
       out += pdfBytesToUtf8(data + i, step, encoding);
     }
@@ -368,26 +466,33 @@ bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
           oct = (oct << 3) | (*p++ - '0');
           ++count;
         }
-        rawBytes.push_back(static_cast<char>(oct & 0xFF));
+        if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+          rawBytes.push_back(static_cast<char>(oct & 0xFF));
+        }
         continue;
       }
+      char out = c;
       if (c == 'n')
-        rawBytes.push_back('\n');
+        out = '\n';
       else if (c == 'r')
-        rawBytes.push_back('\r');
+        out = '\r';
       else if (c == 't')
-        rawBytes.push_back('\t');
+        out = '\t';
       else if (c == 'b')
-        rawBytes.push_back('\b');
+        out = '\b';
       else if (c == 'f')
-        rawBytes.push_back('\f');
-      else
-        rawBytes.push_back(c);
+        out = '\f';
+      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+        rawBytes.push_back(out);
+      }
       continue;
     }
     if (*p == '(') {
       ++depth;
-      rawBytes.push_back(*p++);
+      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+        rawBytes.push_back(*p);
+      }
+      ++p;
       continue;
     }
     if (*p == ')') {
@@ -396,10 +501,16 @@ bool readPdfStringLiteral(char*& p, char* end, std::string& rawBytes) {
         ++p;
         break;
       }
-      rawBytes.push_back(*p++);
+      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+        rawBytes.push_back(*p);
+      }
+      ++p;
       continue;
     }
-    rawBytes.push_back(*p++);
+    if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+      rawBytes.push_back(*p);
+    }
+    ++p;
   }
   return true;
 }
@@ -433,7 +544,9 @@ bool readHexString(char*& p, char* end, std::string& rawBytes) {
       haveNibble = true;
     } else {
       acc |= static_cast<uint8_t>(v);
-      rawBytes.push_back(static_cast<char>(acc));
+      if (rawBytes.size() < PDF_MAX_STACK_TOKEN_BYTES) {
+        rawBytes.push_back(static_cast<char>(acc));
+      }
       haveNibble = false;
     }
     ++p;
@@ -508,9 +621,45 @@ bool readOperator(char*& p, char* end, std::string& out) {
   return !out.empty();
 }
 
-// Capture a PDF array including nested `[` `]`; skips string literals and comments inside.
-bool readArrayToken(char*& p, char* end, std::string& out) {
-  out.clear();
+bool skipPdfStringLiteral(char*& p, char* end) {
+  if (p >= end || *p != '(') return false;
+  ++p;
+  int depth = 1;
+  while (p < end && depth > 0) {
+    if (*p == '\\' && p + 1 < end) {
+      p += 2;
+      continue;
+    }
+    if (*p == '(') {
+      ++depth;
+      ++p;
+      continue;
+    }
+    if (*p == ')') {
+      --depth;
+      ++p;
+      continue;
+    }
+    ++p;
+  }
+  return depth == 0;
+}
+
+bool skipHexString(char*& p, char* end) {
+  if (p >= end || *p != '<') return false;
+  ++p;
+  while (p < end) {
+    if (*p == '>') {
+      ++p;
+      return true;
+    }
+    ++p;
+  }
+  return false;
+}
+
+// Capture a PDF array span including nested `[` `]`; skips string literals and comments inside.
+bool readArraySpan(char*& p, char* end, char*& outStart, char*& outEnd) {
   if (p >= end || *p != '[') return false;
   int depth = 1;
   char* start = p;
@@ -525,13 +674,11 @@ bool readArrayToken(char*& p, char* end, std::string& out) {
       continue;
     }
     if (*p == '(') {
-      std::string dummy;
-      if (!readPdfStringLiteral(p, end, dummy)) return false;
+      if (!skipPdfStringLiteral(p, end)) return false;
       continue;
     }
     if (*p == '<' && p + 1 < end && p[1] != '<') {
-      std::string dummy;
-      if (!readHexString(p, end, dummy)) return false;
+      if (!skipHexString(p, end)) return false;
       continue;
     }
     if (*p == '[') {
@@ -546,8 +693,9 @@ bool readArrayToken(char*& p, char* end, std::string& out) {
     }
     ++p;
   }
-  out.assign(start, p);
-  return true;
+  outStart = start;
+  outEnd = p;
+  return depth == 0;
 }
 
 // Skip `<<` ... `>>` inline dictionary (marked-content properties, etc.).
@@ -571,18 +719,17 @@ bool skipInlineDictionary(char*& p, char* end) {
       continue;
     }
     if (*p == '(') {
-      std::string dummy;
-      if (!readPdfStringLiteral(p, end, dummy)) return false;
+      if (!skipPdfStringLiteral(p, end)) return false;
       continue;
     }
     if (*p == '<' && p + 1 < end && p[1] != '<') {
-      std::string dummy;
-      if (!readHexString(p, end, dummy)) return false;
+      if (!skipHexString(p, end)) return false;
       continue;
     }
     if (*p == '[') {
-      std::string dummy;
-      if (!readArrayToken(p, end, dummy)) return false;
+      char* arrayStart = nullptr;
+      char* arrayEnd = nullptr;
+      if (!readArraySpan(p, end, arrayStart, arrayEnd)) return false;
       continue;
     }
     ++p;
@@ -837,6 +984,37 @@ struct TmpRun {
   uint16_t fontSize = 0;
   uint32_t seq = 0;
 };
+
+constexpr size_t kMaxExtractedTextBytes = PDF_MAX_TEXT_BLOCK_BYTES - 1;
+
+static void trimUtf8ToByteLimit(std::string& s, size_t maxBytes = kMaxExtractedTextBytes) {
+  if (s.size() <= maxBytes) {
+    return;
+  }
+  size_t n = maxBytes;
+  while (n > 0 && n < s.size() && (static_cast<unsigned char>(s[n]) & 0xC0U) == 0x80U) {
+    --n;
+  }
+  if (n == 0) {
+    n = maxBytes;
+  }
+  s.resize(n);
+}
+
+static void appendBounded(std::string& dst, std::string_view src, size_t maxBytes = kMaxExtractedTextBytes) {
+  if (dst.size() >= maxBytes || src.empty()) {
+    return;
+  }
+  const size_t take = std::min(src.size(), maxBytes - dst.size());
+  dst.append(src.data(), take);
+  trimUtf8ToByteLimit(dst, maxBytes);
+}
+
+static void appendBounded(std::string& dst, char c, size_t maxBytes = kMaxExtractedTextBytes) {
+  if (dst.size() < maxBytes) {
+    dst.push_back(c);
+  }
+}
 
 void logTmpRunPushDiagnostics(const TmpRun& run, const std::vector<TmpRun>& runs) {
 #if defined(ENABLE_SERIAL_LOG)
@@ -1105,9 +1283,9 @@ bool tryMergeTmpRun(std::vector<TmpRun>& runs, const TmpRun& run) {
   const float gap = run.x - last.endX;
   const float spaceGap = std::max(1.5f, static_cast<float>(std::max<uint16_t>(last.fontSize, run.fontSize)) * 0.18f);
   if (gap > spaceGap && !last.utf8.empty() && last.utf8.back() != ' ') {
-    last.utf8.push_back(' ');
+    appendBounded(last.utf8, ' ');
   }
-  last.utf8 += run.utf8;
+  appendBounded(last.utf8, run.utf8);
   last.style = static_cast<uint8_t>(last.style | run.style);
   last.fontSize = std::max(last.fontSize, run.fontSize);
   last.endX = std::max(last.endX, run.endX);
@@ -1125,8 +1303,11 @@ struct BlockPlacementState {
 void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCounter, BlockPlacementState& placement) {
   if (runs.empty()) return;
   auto pushBlock = [&](std::string& block, float y, float endX, uint16_t maxFontSize, uint8_t styleBits) {
+    trimUtf8ToByteLimit(block);
     normalizePdfText(block);
+    trimUtf8ToByteLimit(block);
     repairCommonPdfTextSpacing(block);
+    trimUtf8ToByteLimit(block);
     if (block.empty()) {
       return;
     }
@@ -1158,6 +1339,7 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
   };
 
   std::string block = runs[0].utf8;
+  trimUtf8ToByteLimit(block);
   float lineY = runs[0].y;
   uint16_t maxFontSize = runs[0].fontSize;
   uint8_t styleBits = runs[0].style;
@@ -1168,15 +1350,16 @@ void flushTextGroup(std::vector<TmpRun>& runs, PdfPage& page, uint32_t& blockCou
       const float spaceGap =
           std::max(1.5f, static_cast<float>(std::max<uint16_t>(runs[i - 1].fontSize, runs[i].fontSize)) * 0.18f);
       if (gap > spaceGap && !block.empty() && block.back() != ' ') {
-        block.push_back(' ');
+        appendBounded(block, ' ');
       }
-      block += runs[i].utf8;
+      appendBounded(block, runs[i].utf8);
       styleBits = static_cast<uint8_t>(styleBits | runs[i].style);
       maxFontSize = std::max(maxFontSize, runs[i].fontSize);
       blockEndX = std::max(blockEndX, runs[i].endX);
     } else {
       pushBlock(block, lineY, blockEndX, maxFontSize, styleBits);
       block = runs[i].utf8;
+      trimUtf8ToByteLimit(block);
       lineY = runs[i].y;
       maxFontSize = runs[i].fontSize;
       styleBits = runs[i].style;
@@ -1213,6 +1396,9 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   std::vector<TmpRun> runs;
   runs.reserve(PDF_MAX_TMP_RUNS);
   std::vector<std::string> stack;
+  char* pendingArrayStart = nullptr;
+  char* pendingArrayEnd = nullptr;
+  size_t pendingArrayStackIndex = std::string::npos;
   BlockPlacementState placement;
   auto emitRun = [&](TmpRun&& run) {
     if (run.utf8.empty()) {
@@ -1252,9 +1438,13 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       continue;
     }
     if (*p == '[') {
-      std::string arr;
-      if (!readArrayToken(p, end, arr)) break;
-      stack.push_back(std::move(arr));
+      char* arrStart = nullptr;
+      char* arrEnd = nullptr;
+      if (!readArraySpan(p, end, arrStart, arrEnd)) break;
+      stack.emplace_back();
+      pendingArrayStart = arrStart;
+      pendingArrayEnd = arrEnd;
+      pendingArrayStackIndex = stack.size() - 1;
       continue;
     }
     if (*p == '/' && (p + 1 >= end || p[1] != '/')) {
@@ -1337,7 +1527,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
     } else if (op == "T*") {
       textY -= lineSpacing;
     } else if (op == "Tj" && !stack.empty()) {
-      const std::string raw = stack.back();
+      const std::string raw = std::move(stack.back());
       stack.pop_back();
       TmpRun r;
       transformPoint(currentCtm, textX, textY, r.x, r.y);
@@ -1350,10 +1540,17 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       textX += estimateTextAdvance(r.utf8, r.fontSize);
       emitRun(std::move(r));
     } else if (op == "TJ" && !stack.empty()) {
-      std::string arr = stack.back();
+      const bool hasArraySpan = pendingArrayStart && pendingArrayEnd && pendingArrayStackIndex == stack.size() - 1;
+      std::string arr;
+      if (!hasArraySpan) {
+        arr = std::move(stack.back());
+      }
       stack.pop_back();
-      char* q = arr.data();
-      char* qend = q + arr.size();
+      char* q = hasArraySpan ? pendingArrayStart : arr.data();
+      char* qend = hasArraySpan ? pendingArrayEnd : (q + arr.size());
+      pendingArrayStart = nullptr;
+      pendingArrayEnd = nullptr;
+      pendingArrayStackIndex = std::string::npos;
       skipWsComment(q, qend);
       if (q < qend && *q == '[') ++q;
       while (q < qend) {
@@ -1395,7 +1592,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       }
     } else if ((op == "'" || op == "\"") && !stack.empty()) {
       textY -= lineSpacing;
-      const std::string raw = stack.back();
+      const std::string raw = std::move(stack.back());
       stack.pop_back();
       TmpRun r;
       transformPoint(currentCtm, textX, textY, r.x, r.y);
@@ -1448,6 +1645,11 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
       const int n = popOperandsForOperator(op);
       if (n > 0 && stack.size() >= static_cast<size_t>(n)) {
         for (int i = 0; i < n; ++i) stack.pop_back();
+      }
+      if (pendingArrayStackIndex >= stack.size()) {
+        pendingArrayStart = nullptr;
+        pendingArrayEnd = nullptr;
+        pendingArrayStackIndex = std::string::npos;
       }
     }
   }

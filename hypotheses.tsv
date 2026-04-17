@@ -8,3 +8,13 @@ The local experimental ContentStream changes caused the esp32-c6 spacing regress
 Increasing PDF_MAX_TMP_RUNS only masked the experimental parser regression and is not needed on the passing parser baseline	proven
 Deferring PDF cache metadata writes until after the first successful page parse reduces startup-path SD work while preserving cache behavior	needs further investigation
 Removing redundant existence checks before SD open calls reduces repeated SdFat path work and keeps the startup path simpler	needs further investigation
+Large/complex PDFs crash because PDF parsing allocates multiple large fixed buffers on task stack during getPage/content stream parsing	disproven
+Large/complex PDFs crash because PdfReaderActivity caches wrapped text/image artifacts without enough bounds for complex pages	needs further investigation
+Large/complex PDFs crash because cache metadata/page cache SD operations leak handles or create excessive transient heap/file work	needs further investigation
+Complex PDF parsing repeatedly allocates and frees a 32 KiB InflateReader history window for content/object stream decoding	proven
+Using a shared static InflateReader history window removes the repeated 32 KiB streaming decode heap churn	proven
+Large TJ arrays and long PDF string tokens can drive unnecessary parser heap growth before being capped into fixed PdfTextBlock storage	proven
+Keeping the InflateReader history window as a static array prevents reclaiming that 32 KiB after leaving PDF reading	proven
+Lazily allocating the shared InflateReader history window and releasing it from Pdf::close returns that 32 KiB after PDF exit	proven
+ToUnicode CMap decode scratch buffers can move from permanent static storage to a retained heap workspace released on PDF close	proven
+Pdf.cpp catalog/page object scratch buffers do not need permanent static storage and can become scoped locals	proven

@@ -8,11 +8,14 @@
 #include <zlib.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <iterator>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -23,7 +26,94 @@
 #include "PdfOutline.h"
 #include "PdfPage.h"
 #include "PdfPageNavigation.h"
+#include "PdfScratch.h"
 #include "XrefTable.h"
+
+namespace {
+
+struct AllocationStats {
+  uint64_t calls = 0;
+  uint64_t bytes = 0;
+};
+
+std::atomic<uint64_t> g_allocCalls{0};
+std::atomic<uint64_t> g_allocBytes{0};
+std::atomic<uint64_t> g_allocLargeCalls{0};
+std::atomic<uint64_t> g_allocLargeBytes{0};
+std::atomic<uint64_t> g_alloc16kCalls{0};
+size_t g_largeAllocSizes[32]{};
+uint64_t g_largeAllocSizeCounts[32]{};
+
+void resetAllocationStats() {
+  g_allocCalls.store(0, std::memory_order_relaxed);
+  g_allocBytes.store(0, std::memory_order_relaxed);
+  g_allocLargeCalls.store(0, std::memory_order_relaxed);
+  g_allocLargeBytes.store(0, std::memory_order_relaxed);
+  g_alloc16kCalls.store(0, std::memory_order_relaxed);
+  for (size_t i = 0; i < std::size(g_largeAllocSizes); ++i) {
+    g_largeAllocSizes[i] = 0;
+    g_largeAllocSizeCounts[i] = 0;
+  }
+}
+
+AllocationStats allocationStats() {
+  return {g_allocCalls.load(std::memory_order_relaxed), g_allocBytes.load(std::memory_order_relaxed)};
+}
+
+void recordLargeAllocationSize(std::size_t size) {
+  for (size_t i = 0; i < std::size(g_largeAllocSizes); ++i) {
+    if (g_largeAllocSizes[i] == size) {
+      ++g_largeAllocSizeCounts[i];
+      return;
+    }
+    if (g_largeAllocSizes[i] == 0) {
+      g_largeAllocSizes[i] = size;
+      g_largeAllocSizeCounts[i] = 1;
+      return;
+    }
+  }
+}
+
+}  // namespace
+
+void* operator new(std::size_t size) {
+  g_allocCalls.fetch_add(1, std::memory_order_relaxed);
+  g_allocBytes.fetch_add(static_cast<uint64_t>(size), std::memory_order_relaxed);
+  if (size >= 4096) {
+    g_allocLargeCalls.fetch_add(1, std::memory_order_relaxed);
+    g_allocLargeBytes.fetch_add(static_cast<uint64_t>(size), std::memory_order_relaxed);
+    if (size >= 14000 && size <= 17000) {
+      g_alloc16kCalls.fetch_add(1, std::memory_order_relaxed);
+    }
+    recordLargeAllocationSize(size);
+  }
+  if (void* p = std::malloc(size)) {
+    return p;
+  }
+  throw std::bad_alloc();
+}
+
+void* operator new[](std::size_t size) {
+  g_allocCalls.fetch_add(1, std::memory_order_relaxed);
+  g_allocBytes.fetch_add(static_cast<uint64_t>(size), std::memory_order_relaxed);
+  if (size >= 4096) {
+    g_allocLargeCalls.fetch_add(1, std::memory_order_relaxed);
+    g_allocLargeBytes.fetch_add(static_cast<uint64_t>(size), std::memory_order_relaxed);
+    if (size >= 14000 && size <= 17000) {
+      g_alloc16kCalls.fetch_add(1, std::memory_order_relaxed);
+    }
+    recordLargeAllocationSize(size);
+  }
+  if (void* p = std::malloc(size)) {
+    return p;
+  }
+  throw std::bad_alloc();
+}
+
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -505,6 +595,11 @@ void testInflateReaderLongWindowStreaming() {
 
   REQUIRE(producedTotal == plainLen);
   REQUIRE(std::memcmp(out.data(), plain.data(), plainLen) == 0);
+  REQUIRE(InflateReader::retainedSharedBufferBytes() == 32768);
+  ctx.reader.deinit();
+  REQUIRE(InflateReader::retainedSharedBufferBytes() == 32768);
+  InflateReader::releaseSharedBuffer();
+  REQUIRE(InflateReader::retainedSharedBufferBytes() == 0);
 }
 
 void collapseAsciiWhitespace(std::string& s) {
@@ -655,6 +750,9 @@ void testPreviewMatchesPdftotext() {
 
     const std::string preview = buildDocumentPreview(file, xref, pageTree, pageTree.pageCount(), 256);
     if (c.strictPrefix) {
+      if (preview.rfind(c.expectedPrefix, 0) != 0) {
+        std::fprintf(stderr, "Document preview mismatch for %s:\n%s\n", c.path, preview.c_str());
+      }
       REQUIRE(preview.rfind(c.expectedPrefix, 0) == 0);
     }
   }
@@ -725,6 +823,51 @@ void testFirstPageReadableTextMatchesExpectedPreviews() {
     }
     REQUIRE(preview.rfind(c.expectedPrefix, 0) == 0);
   }
+}
+
+void testEsp32DatasheetParseAllocationBudget() {
+  HalFile file;
+  REQUIRE(file.loadPath("test/pdf/esp32-c6_datasheet_en.pdf"));
+
+  XrefTable xref;
+  REQUIRE(xref.parse(file));
+
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBodyFixed;
+  REQUIRE(xref.readDictForObject(file, xref.rootObjId(), catalogBodyFixed));
+  const std::string catalogBody(catalogBodyFixed.view());
+  const uint32_t pagesObjId = PdfObject::getDictRef("/Pages", catalogBody);
+  REQUIRE(pagesObjId != 0);
+
+  PageTree pageTree;
+  REQUIRE(pageTree.parse(file, xref, pagesObjId));
+
+  auto loadPage = [&](uint32_t pageIndex, PdfPage& outPage) -> bool {
+    const uint32_t pageObjId = pageTree.getPageObjectId(pageIndex);
+    if (pageObjId == 0) {
+      return false;
+    }
+    PdfFixedString<PDF_OBJECT_BODY_MAX> pageBodyFixed;
+    if (!xref.readDictForObject(file, pageObjId, pageBodyFixed)) {
+      return false;
+    }
+    return parseSinglePage(file, xref, std::string(pageBodyFixed.view()), outPage);
+  };
+
+  for (uint32_t pageIndex = 0; pageIndex < 3; ++pageIndex) {
+    PdfPage page;
+    REQUIRE(loadPage(pageIndex, page));
+  }
+  resetAllocationStats();
+  for (uint32_t pageIndex = 0; pageIndex < 3; ++pageIndex) {
+    PdfPage page;
+    REQUIRE(loadPage(pageIndex, page));
+  }
+  const AllocationStats stats = allocationStats();
+  REQUIRE(stats.bytes < 800000);
+  REQUIRE(stats.calls < 1200);
+  REQUIRE(PdfScratch::retainedBufferBytes() > 0);
+  PdfScratch::releaseRetainedBuffers();
+  REQUIRE(PdfScratch::retainedBufferBytes() == 0);
 }
 
 bool runOnePdf(const char* path) {
@@ -851,15 +994,39 @@ bool runOnePdf(const char* path) {
   printFirstTextBlockPreview("page0 first block", page0);
 
   const uint32_t benchmarkPages = std::min<uint32_t>(pageCount, 3);
+  const bool showAllocStats = std::getenv("PDF_ALLOC_STATS") != nullptr;
   double parseMs = 0.0;
   double previewMs = 0.0;
   size_t benchmarkBlocks = 0;
   size_t benchmarkChars = 0;
+  uint64_t parseAllocCalls = 0;
+  uint64_t parseAllocBytes = 0;
   for (uint32_t pageIndex = 0; pageIndex < benchmarkPages; ++pageIndex) {
     PdfPage page;
+    resetAllocationStats();
     const auto parseStart = std::chrono::steady_clock::now();
     REQF(loadPage(pageIndex, page));
     const auto parseEnd = std::chrono::steady_clock::now();
+    const AllocationStats parseStats = allocationStats();
+    if (showAllocStats) {
+      std::printf(
+          "     page %u parse allocations: calls=%llu bytes=%llu large_calls=%llu large_bytes=%llu 16k_calls=%llu\n",
+          static_cast<unsigned>(pageIndex + 1), static_cast<unsigned long long>(parseStats.calls),
+          static_cast<unsigned long long>(parseStats.bytes),
+          static_cast<unsigned long long>(g_allocLargeCalls.load(std::memory_order_relaxed)),
+          static_cast<unsigned long long>(g_allocLargeBytes.load(std::memory_order_relaxed)),
+          static_cast<unsigned long long>(g_alloc16kCalls.load(std::memory_order_relaxed)));
+      std::printf("       large allocation sizes:");
+      for (size_t i = 0; i < std::size(g_largeAllocSizes); ++i) {
+        if (g_largeAllocSizes[i] == 0) {
+          break;
+        }
+        std::printf(" %zu:%llu", g_largeAllocSizes[i], static_cast<unsigned long long>(g_largeAllocSizeCounts[i]));
+      }
+      std::printf("\n");
+    }
+    parseAllocCalls += parseStats.calls;
+    parseAllocBytes += parseStats.bytes;
     const auto previewStart = std::chrono::steady_clock::now();
     const std::string preview = buildPageLinePreview(page);
     const auto previewEnd = std::chrono::steady_clock::now();
@@ -870,6 +1037,10 @@ bool runOnePdf(const char* path) {
   }
   std::printf("     page pipeline benchmark: pages=%u parse=%.2fms preview=%.2fms blocks=%zu preview_chars=%zu\n",
               static_cast<unsigned>(benchmarkPages), parseMs, previewMs, benchmarkBlocks, benchmarkChars);
+  if (showAllocStats) {
+    std::printf("     page parse allocations: calls=%llu bytes=%llu\n",
+                static_cast<unsigned long long>(parseAllocCalls), static_cast<unsigned long long>(parseAllocBytes));
+  }
   return true;
 }
 
@@ -885,6 +1056,7 @@ int main(int argc, char** argv) {
   testInflateReaderLongWindowStreaming();
   testPreviewMatchesPdftotext();
   testFirstPageReadableTextMatchesExpectedPreviews();
+  testEsp32DatasheetParseAllocationBudget();
   std::vector<const char*> paths;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) paths.push_back(argv[i]);

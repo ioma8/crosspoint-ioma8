@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <cstring>
 
+#include "InflateReader.h"
 #include "Pdf/ContentStream.h"
 #include "Pdf/PdfLog.h"
 #include "Pdf/PdfObject.h"
+#include "Pdf/PdfScratch.h"
 
 namespace {
 
@@ -68,7 +70,7 @@ bool readSignatureChunk(FsFile& file, size_t offset, size_t maxLen, uint32_t& ou
 }
 
 bool loadCatalogInfo(FsFile& file, const XrefTable& xref, uint32_t rootId, CatalogInfo& info) {
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
   info = {};
   if (rootId == 0 || !xref.readDictForObject(file, rootId, catalogBody)) {
     return false;
@@ -103,6 +105,8 @@ void Pdf::close() {
   sourceSignature_ = {};
   path_.clear();
   streamScratch_.clear();
+  PdfScratch::releaseRetainedBuffers();
+  InflateReader::releaseSharedBuffer();
 }
 
 bool Pdf::computeSourceSignature(SourceSignature& outSignature) {
@@ -195,6 +199,8 @@ bool Pdf::open(const char* path) {
   if (!computeSourceSignature(sourceSignature_)) {
     pdfLogErrPath("Failed to fingerprint source: ", path_.c_str());
     file_.close();
+    PdfScratch::releaseRetainedBuffers();
+    InflateReader::releaseSharedBuffer();
     return false;
   }
 
@@ -221,6 +227,8 @@ bool Pdf::open(const char* path) {
   if (!parseFromSource(true)) {
     pdfLogErrPath("Failed to parse PDF source: ", path_.c_str());
     file_.close();
+    PdfScratch::releaseRetainedBuffers();
+    InflateReader::releaseSharedBuffer();
     return false;
   }
 
@@ -233,8 +241,8 @@ bool Pdf::saveProgress(uint32_t page) { return valid_ && cache_.saveProgress(pag
 bool Pdf::loadProgress(uint32_t& page) { return valid_ && cache_.loadProgress(page); }
 
 bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> pageBody;
-  static PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> pageBody;
+  PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
   out.clear();
   if (!valid_ || pageNum >= pages_) {
     return false;

@@ -1,5 +1,6 @@
 #include "InflateReader.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <type_traits>
 
@@ -8,6 +9,8 @@ namespace {
 // in the PDF/image paths while still supporting full DEFLATE distance range.
 // ZIP/deflate streams can require up to 32KiB back-references.
 constexpr size_t INFLATE_DICT_SIZE = 32768;
+uint8_t* g_inflateDict = nullptr;
+bool g_inflateDictInUse = false;
 }  // namespace
 
 // Guarantee the cast pattern in the header comment is valid.
@@ -20,8 +23,18 @@ bool InflateReader::init(const bool streaming) {
   deinit();  // free any previously allocated ring buffer and reset state
 
   if (streaming) {
-    ringBuffer = static_cast<uint8_t*>(malloc(INFLATE_DICT_SIZE));
-    if (!ringBuffer) return false;
+    if (g_inflateDictInUse) {
+      return false;
+    }
+    if (!g_inflateDict) {
+      g_inflateDict = static_cast<uint8_t*>(malloc(INFLATE_DICT_SIZE));
+      if (!g_inflateDict) {
+        return false;
+      }
+    }
+    g_inflateDictInUse = true;
+    usingSharedRingBuffer = true;
+    ringBuffer = g_inflateDict;
     memset(ringBuffer, 0, INFLATE_DICT_SIZE);
   }
 
@@ -31,11 +44,24 @@ bool InflateReader::init(const bool streaming) {
 
 void InflateReader::deinit() {
   if (ringBuffer) {
-    free(ringBuffer);
+    if (usingSharedRingBuffer) {
+      g_inflateDictInUse = false;
+    }
     ringBuffer = nullptr;
   }
+  usingSharedRingBuffer = false;
   memset(&decomp, 0, sizeof(decomp));
 }
+
+void InflateReader::releaseSharedBuffer() {
+  if (g_inflateDictInUse) {
+    return;
+  }
+  free(g_inflateDict);
+  g_inflateDict = nullptr;
+}
+
+size_t InflateReader::retainedSharedBufferBytes() { return g_inflateDict ? INFLATE_DICT_SIZE : 0; }
 
 void InflateReader::setSource(const uint8_t* src, size_t len) {
   decomp.source = src;
