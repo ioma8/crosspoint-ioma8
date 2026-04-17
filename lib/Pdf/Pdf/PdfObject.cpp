@@ -3,6 +3,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 
 #include "PdfLog.h"
 #include "XrefTable.h"
@@ -165,11 +167,12 @@ uint32_t resolveIndirectStreamLength(FsFile& file, const XrefTable* xref, uint32
   if (lenObjOff == 0) {
     return 0;
   }
-  PdfFixedString<PDF_OBJECT_BODY_MAX> lenBody;
-  if (!PdfObject::readAt(file, lenObjOff, lenBody, nullptr, nullptr, nullptr)) {
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> lenBody(new (std::nothrow)
+                                                                   PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  if (!lenBody || !PdfObject::readAt(file, lenObjOff, *lenBody, nullptr, nullptr, nullptr)) {
     return 0;
   }
-  const char* p = lenBody.c_str();
+  const char* p = lenBody->c_str();
   char* end = nullptr;
   const auto isWs = [](const char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
 

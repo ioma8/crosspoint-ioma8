@@ -8,6 +8,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <sstream>
 
 #include "PdfFixed.h"
@@ -363,6 +365,11 @@ class ToUnicodeWorkspaceUse {
  private:
   PdfScratch::ToUnicodeWorkspace* workspace_ = nullptr;
 };
+
+template <typename T>
+std::unique_ptr<T> makeContentScratch() {
+  return std::unique_ptr<T>(new (std::nothrow) T());
+}
 
 [[gnu::noinline]] static bool loadToUnicodeMapForFont(FsFile& file, const XrefTable& xref, uint32_t fontObjId,
                                                       ToUnicodeMap& out) {
@@ -1533,14 +1540,27 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   const std::string resBody = resolveResourcesDict(file, xref, pageObjectBody);
   const std::string xobjDict = getXObjectDict(resBody);
   const std::string fontDictBody = resolveFontDict(file, xref, pageObjectBody);
-  FontInfoCache<PDF_MAX_FONT_CID_MAPS> fontInfoCache;
-  FontInfo uncachedFontInfo;
-  NameIdCache<PDF_MAX_OP_STACK> fontNameCache;
-  NameIdCache<PDF_MAX_OP_STACK> xobjNameCache;
+  auto fontInfoCacheStorage = makeContentScratch<FontInfoCache<PDF_MAX_FONT_CID_MAPS>>();
+  auto uncachedFontInfoStorage = makeContentScratch<FontInfo>();
+  auto fontNameCacheStorage = makeContentScratch<NameIdCache<PDF_MAX_OP_STACK>>();
+  auto xobjNameCacheStorage = makeContentScratch<NameIdCache<PDF_MAX_OP_STACK>>();
+  auto ctmStackStorage = makeContentScratch<std::array<PdfMatrix, PDF_MAX_OP_STACK>>();
+  auto runsStorage = makeContentScratch<PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS>>();
+  auto opStackStorage = makeContentScratch<OpStack>();
+  if (!fontInfoCacheStorage || !uncachedFontInfoStorage || !fontNameCacheStorage || !xobjNameCacheStorage ||
+      !ctmStackStorage || !runsStorage || !opStackStorage) {
+    return false;
+  }
+  auto& fontInfoCache = *fontInfoCacheStorage;
+  auto& uncachedFontInfo = *uncachedFontInfoStorage;
+  auto& fontNameCache = *fontNameCacheStorage;
+  auto& xobjNameCache = *xobjNameCacheStorage;
+  auto& ctmStack = *ctmStackStorage;
+  auto& runs = *runsStorage;
+  auto& stack = *opStackStorage;
   const ToUnicodeMap* currentCidMap = nullptr;
   SimpleFontEncoding currentSimpleFontEncoding = SimpleFontEncoding::WinAnsi;
   PdfMatrix currentCtm;
-  std::array<PdfMatrix, PDF_MAX_OP_STACK> ctmStack{};
   size_t ctmStackSize = 0;
 
   float textX = 0;
@@ -1550,8 +1570,6 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   uint16_t currentFontSize = 0;
   uint32_t textBlockCounter = 0;
   uint32_t seqCounter = 0;
-  PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS> runs;
-  OpStack stack;
   BlockPlacementState placement;
   auto emitRun = [&](TmpRun&& run) {
     if (run.utf8.empty()) {

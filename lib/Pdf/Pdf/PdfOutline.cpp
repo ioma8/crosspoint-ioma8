@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <string_view>
 
 #include "PageTree.h"
@@ -25,6 +27,11 @@ static constexpr uint16_t kWin1252ToU[128] = {
     0x00F5, 0x00F6, 0x00F7, 0x00F8, 0x00F9, 0x00FA, 0x00FB, 0x00FC, 0x00FD, 0x00FE, 0x00FF};
 
 constexpr size_t kTraversalCap = 64;
+
+template <typename T>
+std::unique_ptr<T> makeScratch() {
+  return std::unique_ptr<T>(new (std::nothrow) T());
+}
 
 void appendUtf8(PdfFixedString<PDF_MAX_OUTLINE_TITLE_BYTES>& out, uint32_t cp) {
   if (cp < 0x80) {
@@ -368,30 +375,34 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
   }
 
   uint32_t destTreeRoot = namesObjId;
-  PdfFixedString<PDF_OBJECT_BODY_MAX> rootBody;
-  if (xref.readDictForObject(file, namesObjId, rootBody)) {
-    const uint32_t destsObjId = PdfObject::getDictRef("/Dests", rootBody.view());
+  auto rootBody = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (rootBody && xref.readDictForObject(file, namesObjId, *rootBody)) {
+    const uint32_t destsObjId = PdfObject::getDictRef("/Dests", rootBody->view());
     if (destsObjId != 0) {
       destTreeRoot = destsObjId;
     }
   }
 
-  PdfFixedVector<uint32_t, kTraversalCap> stack;
-  if (!stack.push_back(destTreeRoot)) {
+  auto stack = makeScratch<PdfFixedVector<uint32_t, kTraversalCap>>();
+  if (!stack || !stack->push_back(destTreeRoot)) {
     return false;
   }
 
-  while (!stack.empty()) {
-    const uint32_t nodeId = stack.back();
-    stack.pop_back();
+  auto body = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!body) {
+    return false;
+  }
+  while (!stack->empty()) {
+    const uint32_t nodeId = stack->back();
+    stack->pop_back();
 
-    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-    if (!xref.readDictForObject(file, nodeId, body)) {
+    body->clear();
+    if (!xref.readDictForObject(file, nodeId, *body)) {
       continue;
     }
 
     PdfFixedString<PDF_DICT_VALUE_MAX> kidsVal;
-    if (PdfObject::getDictValue("/Kids", body.view(), kidsVal)) {
+    if (PdfObject::getDictValue("/Kids", body->view(), kidsVal)) {
       const char* p = kidsVal.c_str();
       const char* end = kidsVal.c_str() + kidsVal.size();
       while (p < end) {
@@ -400,7 +411,7 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
           ++p;
           continue;
         }
-        if (!stack.push_back(childId)) {
+        if (!stack->push_back(childId)) {
           return false;
         }
       }
@@ -408,7 +419,7 @@ bool findNamedDestinationObjectId(FsFile& file, const XrefTable& xref, uint32_t 
     }
 
     PdfFixedString<PDF_DICT_VALUE_MAX> namesVal;
-    if (!PdfObject::getDictValue("/Names", body.view(), namesVal)) {
+    if (!PdfObject::getDictValue("/Names", body->view(), namesVal)) {
       continue;
     }
 
@@ -469,11 +480,11 @@ bool resolveNamedDestinationToPage(FsFile& file, const XrefTable& xref, const Pa
     if (hasDirectDest) {
       return parseDestArrayToPage(pageTree, directDest.view(), outPage);
     }
-    PdfFixedString<PDF_OBJECT_BODY_MAX> destBody;
-    if (!xref.readDictForObject(file, destObjId, destBody)) {
+    auto destBody = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+    if (!destBody || !xref.readDictForObject(file, destObjId, *destBody)) {
       return false;
     }
-    return parseDestArrayToPage(pageTree, destBody.view(), outPage);
+    return parseDestArrayToPage(pageTree, destBody->view(), outPage);
   }
 
   return parseDestArrayToPage(pageTree, dest, outPage);
@@ -505,11 +516,11 @@ bool resolveActionDestination(FsFile& file, const XrefTable& xref, std::string_v
     std::strtoul(afterGen, &e, 10);
     while (*e == ' ' || *e == '\t' || *e == '\r' || *e == '\n') ++e;
     if (*e == 'R' || *e == 'r') {
-      PdfFixedString<PDF_OBJECT_BODY_MAX> actionBody;
-      if (!xref.readDictForObject(file, static_cast<uint32_t>(objId), actionBody)) {
+      auto actionBody = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+      if (!actionBody || !xref.readDictForObject(file, static_cast<uint32_t>(objId), *actionBody)) {
         return false;
       }
-      return PdfObject::getDictValue("/D", actionBody.view(), outDest);
+      return PdfObject::getDictValue("/D", actionBody->view(), outDest);
     }
   }
 
@@ -519,34 +530,38 @@ bool resolveActionDestination(FsFile& file, const XrefTable& xref, std::string_v
 bool walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTree, uint32_t namesObjId,
                      uint32_t firstItemId, PdfFixedVector<PdfOutlineEntry, PDF_MAX_OUTLINE_ENTRIES>& out, size_t& count,
                      const size_t maxEntries) {
-  PdfFixedVector<uint32_t, PDF_MAX_OUTLINE_ENTRIES * 2> stack;
-  if (firstItemId != 0 && !stack.push_back(firstItemId)) {
+  auto stack = makeScratch<PdfFixedVector<uint32_t, PDF_MAX_OUTLINE_ENTRIES * 2>>();
+  auto body = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!stack || !body) {
+    return false;
+  }
+  if (firstItemId != 0 && !stack->push_back(firstItemId)) {
     return false;
   }
 
-  while (!stack.empty() && count < maxEntries) {
-    const uint32_t itemId = stack.back();
-    stack.pop_back();
+  while (!stack->empty() && count < maxEntries) {
+    const uint32_t itemId = stack->back();
+    stack->pop_back();
 
-    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-    if (!xref.readDictForObject(file, itemId, body)) {
+    body->clear();
+    if (!xref.readDictForObject(file, itemId, *body)) {
       continue;
     }
 
     PdfOutlineEntry entry;
     PdfFixedString<PDF_DICT_VALUE_MAX> titleRaw;
-    if (PdfObject::getDictValue("/Title", body.view(), titleRaw)) {
+    if (PdfObject::getDictValue("/Title", body->view(), titleRaw)) {
       decodeTitleValue(std::move(titleRaw), entry.title);
     }
 
     PdfFixedString<PDF_DICT_VALUE_MAX> dest;
-    if (!PdfObject::getDictValue("/Dest", body.view(), dest)) {
+    if (!PdfObject::getDictValue("/Dest", body->view(), dest)) {
       dest.clear();
     }
     trimVal(dest);
     if (dest.empty()) {
       PdfFixedString<PDF_DICT_VALUE_MAX> action;
-      if (PdfObject::getDictValue("/A", body.view(), action) && !action.empty()) {
+      if (PdfObject::getDictValue("/A", body->view(), action) && !action.empty()) {
         if (!resolveActionDestination(file, xref, action.view(), dest)) {
           dest.clear();
         }
@@ -566,13 +581,13 @@ bool walkOutlineItem(FsFile& file, const XrefTable& xref, const PageTree& pageTr
       }
     }
 
-    const uint32_t nextSibling = PdfObject::getDictRef("/Next", body.view());
-    if (nextSibling != 0 && !stack.push_back(nextSibling)) {
+    const uint32_t nextSibling = PdfObject::getDictRef("/Next", body->view());
+    if (nextSibling != 0 && !stack->push_back(nextSibling)) {
       return false;
     }
 
-    const uint32_t firstChild = PdfObject::getDictRef("/First", body.view());
-    if (firstChild != 0 && !stack.push_back(firstChild)) {
+    const uint32_t firstChild = PdfObject::getDictRef("/First", body->view());
+    if (firstChild != 0 && !stack->push_back(firstChild)) {
       return false;
     }
   }
@@ -590,12 +605,12 @@ bool PdfOutlineParser::parse(FsFile& file, const XrefTable& xref, const PageTree
     return true;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-  if (!xref.readDictForObject(file, outlinesObjId, body)) {
+  auto body = makeScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!body || !xref.readDictForObject(file, outlinesObjId, *body)) {
     return true;
   }
 
-  const uint32_t first = PdfObject::getDictRef("/First", body.view());
+  const uint32_t first = PdfObject::getDictRef("/First", body->view());
   if (first == 0) {
     return true;
   }

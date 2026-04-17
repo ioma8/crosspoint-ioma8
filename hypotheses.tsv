@@ -18,3 +18,4 @@ Keeping the InflateReader history window as a static array prevents reclaiming t
 Lazily allocating the shared InflateReader history window and releasing it from Pdf::close returns that 32 KiB after PDF exit	proven
 ToUnicode CMap decode scratch buffers can move from permanent static storage to a retained heap workspace released on PDF close	proven
 Pdf.cpp catalog/page object scratch buffers do not need permanent static storage and can become scoped locals	proven
+Device crash at 0x4205c45a is stack overflow in PdfObject::readAt called from PdfOutlineParser::parse because outline scratch buffers were moved from static storage to stack locals	proven
