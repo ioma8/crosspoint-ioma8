@@ -16,12 +16,9 @@ struct FileInflateReadCtx {
   uint32_t bpos = 0;
 };
 
-FileInflateReadCtx* g_fileInflateCtx = nullptr;
-
 // Streaming input for uzlib: no malloc of full compressed stream (saves RAM on embedded).
 static int fileInflateReadCb(uzlib_uncomp* u) {
-  (void)u;
-  FileInflateReadCtx* c = g_fileInflateCtx;
+  auto* c = static_cast<FileInflateReadCtx*>(u->user_context);
   if (!c) return -1;
   if (c->bpos < c->blen) {
     return c->buf[c->bpos++];
@@ -99,17 +96,14 @@ size_t StreamDecoder::flateDecode(FsFile& file, uint32_t streamOffset, uint32_t 
     ctx.left = 0;
   }
 
-  g_fileInflateCtx = &ctx;
-
   InflateReader ir;
   if (!ir.init(true)) {
-    g_fileInflateCtx = nullptr;
     return 0;
   }
-  uzlib_uncomp* d = ir.raw();
-  d->source_read_cb = fileInflateReadCb;
-  d->source = nullptr;
-  d->source_limit = nullptr;
+  ir.setUserContext(&ctx);
+  ir.setReadCallback(fileInflateReadCb);
+  ir.raw()->source = nullptr;
+  ir.raw()->source_limit = nullptr;
 
   size_t total = 0;
   while (total < maxOutBytes) {
@@ -124,7 +118,6 @@ size_t StreamDecoder::flateDecode(FsFile& file, uint32_t streamOffset, uint32_t 
     }
   }
 
-  g_fileInflateCtx = nullptr;
   return total;
 }
 
@@ -200,17 +193,14 @@ bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint3
     readCtx.left = 0;
   }
 
-  g_fileInflateCtx = &readCtx;
-
   InflateReader ir;
   if (!ir.init(true)) {
-    g_fileInflateCtx = nullptr;
     return false;
   }
-  uzlib_uncomp* d = ir.raw();
-  d->source_read_cb = fileInflateReadCb;
-  d->source = nullptr;
-  d->source_limit = nullptr;
+  ir.setUserContext(&readCtx);
+  ir.setReadCallback(fileInflateReadCb);
+  ir.raw()->source = nullptr;
+  ir.raw()->source_limit = nullptr;
 
   uint8_t out[256];
   while (true) {
@@ -218,7 +208,6 @@ bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint3
     const InflateStatus st = ir.readAtMost(out, sizeof(out), &produced);
     if (produced > 0 && !consumer(ctx, out, produced)) {
       LOG_ERR("PDF", "StreamDecoder: chunk consumer rejected %zu bytes", produced);
-      g_fileInflateCtx = nullptr;
       return false;
     }
     if (st == InflateStatus::Done) {
@@ -226,12 +215,10 @@ bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint3
     }
     if (st == InflateStatus::Error) {
       LOG_ERR("PDF", "StreamDecoder: inflate error while streaming");
-      g_fileInflateCtx = nullptr;
       return false;
     }
   }
 
-  g_fileInflateCtx = nullptr;
   return true;
 }
 

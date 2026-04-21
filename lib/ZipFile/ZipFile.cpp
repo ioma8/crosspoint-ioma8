@@ -7,7 +7,7 @@
 #include <algorithm>
 
 struct ZipInflateCtx {
-  InflateReader reader;  // Must be first — callback casts uzlib_uncomp* to ZipInflateCtx*
+  InflateReader reader;
   FsFile* file = nullptr;
   size_t fileRemaining = 0;
   uint8_t* readBuf = nullptr;
@@ -19,7 +19,8 @@ constexpr uint16_t ZIP_METHOD_STORED = 0;
 constexpr uint16_t ZIP_METHOD_DEFLATED = 8;
 
 int zipReadCallback(uzlib_uncomp* uncomp) {
-  auto* ctx = reinterpret_cast<ZipInflateCtx*>(uncomp);
+  auto* ctx = static_cast<ZipInflateCtx*>(uncomp->user_context);
+  if (!ctx) return -1;
   if (ctx->fileRemaining == 0) return -1;
 
   const size_t toRead = ctx->fileRemaining < ctx->readBufSize ? ctx->fileRemaining : ctx->readBufSize;
@@ -588,6 +589,7 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
       }
       return false;
     }
+    ctx.reader.setUserContext(&ctx);
     ctx.reader.setReadCallback(zipReadCallback);
 
     bool success = false;

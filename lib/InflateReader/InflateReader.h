@@ -3,6 +3,7 @@
 #include <uzlib.h>
 
 #include <cstddef>
+#include <memory>
 
 // Return value for readAtMost().
 enum class InflateStatus {
@@ -19,21 +20,21 @@ enum class InflateStatus {
 //                  across multiple read() / readAtMost() calls.
 //
 // Streaming callback pattern:
-//   The uzlib read callback receives a `struct uzlib_uncomp*` with no separate
-//   context pointer. To attach context, make InflateReader the *first member* of
-//   your context struct, then cast inside the callback:
+//   Attach caller state with setUserContext(), then read it from
+//   uncomp->user_context inside the callback:
 //
 //     struct MyCtx {
-//       InflateReader reader;   // must be first
+//       InflateReader reader;
 //       FsFile* file;
 //       // ...
 //     };
 //     static int myCb(struct uzlib_uncomp* u) {
-//       MyCtx* ctx = reinterpret_cast<MyCtx*>(u);   // valid: reader.decomp is at offset 0
+//       MyCtx* ctx = static_cast<MyCtx*>(u->user_context);
 //       // ... fill u->source / u->source_limit, return first byte
 //     }
 //     MyCtx ctx;
 //     ctx.reader.init(true);
+//     ctx.reader.setUserContext(&ctx);
 //     ctx.reader.setReadCallback(myCb);
 //
 class InflateReader {
@@ -63,6 +64,7 @@ class InflateReader {
   // Set a uzlib-compatible read callback for streaming input.
   // See class-level comment for the expected callback/context struct pattern.
   void setReadCallback(int (*cb)(uzlib_uncomp*));
+  void setUserContext(void* ctx);
 
   // Consume the 2-byte zlib header (CMF + FLG) from the input stream.
   // Call this once before the first read() when input is zlib-wrapped (e.g. PNG IDAT).
@@ -81,10 +83,10 @@ class InflateReader {
   // Returns a pointer to the underlying TINF_DATA.
   // Useful for advanced streaming setups where the callback needs access to the
   // uzlib struct directly (e.g. updating source/source_limit).
-  uzlib_uncomp* raw() { return &decomp; }
+  uzlib_uncomp* raw() { return decomp.get(); }
 
  private:
-  uzlib_uncomp decomp = {};
+  std::unique_ptr<uzlib_uncomp> decomp;
   uint8_t* ringBuffer = nullptr;
   bool usingSharedRingBuffer = false;
 };

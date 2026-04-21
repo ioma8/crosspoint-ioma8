@@ -72,14 +72,15 @@ bool readSignatureChunk(FsFile& file, size_t offset, size_t maxLen, uint32_t& ou
 }
 
 bool loadCatalogInfo(FsFile& file, const XrefTable& xref, uint32_t rootId, CatalogInfo& info) {
-  PdfFixedString<PDF_OBJECT_BODY_MAX> catalogBody;
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> catalogBody(new (std::nothrow)
+                                                                       PdfFixedString<PDF_OBJECT_BODY_MAX>());
   info = {};
-  if (rootId == 0 || !xref.readDictForObject(file, rootId, catalogBody)) {
+  if (rootId == 0 || !catalogBody || !xref.readDictForObject(file, rootId, *catalogBody)) {
     return false;
   }
-  info.pagesObjId = PdfObject::getDictRef("/Pages", catalogBody.view());
-  info.outlinesId = PdfObject::getDictRef("/Outlines", catalogBody.view());
-  info.namesObjId = PdfObject::getDictRef("/Names", catalogBody.view());
+  info.pagesObjId = PdfObject::getDictRef("/Pages", catalogBody->view());
+  info.outlinesId = PdfObject::getDictRef("/Outlines", catalogBody->view());
+  info.namesObjId = PdfObject::getDictRef("/Names", catalogBody->view());
   return info.pagesObjId != 0;
 }
 
@@ -293,8 +294,6 @@ bool Pdf::saveProgress(uint32_t page) { return valid_ && cache_.saveProgress(pag
 bool Pdf::loadProgress(uint32_t& page) { return valid_ && cache_.loadProgress(page); }
 
 bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
-  PdfFixedString<PDF_OBJECT_BODY_MAX> pageBody;
-  PdfFixedString<PDF_OBJECT_BODY_MAX> contentDict;
   out.clear();
   if (!valid_ || pageNum >= pages_) {
     return false;
@@ -308,17 +307,24 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
   }
   auto releaseXrefOnExit = makeScopeExit([this] { releaseXref(); });
   XrefTable& xref = *xref_;
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> pageBody(new (std::nothrow)
+                                                                    PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> contentDict(new (std::nothrow)
+                                                                       PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  if (!pageBody || !contentDict) {
+    return false;
+  }
 
   const uint32_t pageObjId = pageTree_.getPageObjectId(pageNum);
   if (pageObjId == 0) {
     return false;
   }
 
-  if (!xref.readDictForObject(file_, pageObjId, pageBody)) {
+  if (!xref.readDictForObject(file_, pageObjId, *pageBody)) {
     return false;
   }
 
-  const uint32_t contentId = contentsObjectId(pageBody.view());
+  const uint32_t contentId = contentsObjectId(pageBody->view());
   if (contentId == 0) {
     pdfLogErr("No /Contents for page");
     return false;
@@ -327,21 +333,21 @@ bool Pdf::getPage(uint32_t pageNum, PdfPage& out) {
   uint32_t streamOffset = 0;
   uint32_t streamLength = 0;
   bool compressed = false;
-  if (!xref.readStreamMetaForObject(file_, contentId, contentDict, streamOffset, streamLength, compressed)) {
+  if (!xref.readStreamMetaForObject(file_, contentId, *contentDict, streamOffset, streamLength, compressed)) {
     std::unique_ptr<PdfByteBuffer> streamScratch(new (std::nothrow) PdfByteBuffer());
-    if (!streamScratch || !xref.readStreamForObject(file_, contentId, contentDict, *streamScratch, compressed)) {
+    if (!streamScratch || !xref.readStreamForObject(file_, contentId, *contentDict, *streamScratch, compressed)) {
       return false;
     }
     if (streamScratch->len == 0) {
       return false;
     }
-    if (!ContentStream::parseBuffer(streamScratch->ptr(), streamScratch->len, compressed, file_, xref, pageBody.view(),
+    if (!ContentStream::parseBuffer(streamScratch->ptr(), streamScratch->len, compressed, file_, xref, pageBody->view(),
                                     out)) {
       pdfLogErr("Failed to parse page");
       return false;
     }
   } else {
-    if (!ContentStream::parse(file_, streamOffset, streamLength, compressed, xref, pageBody.view(), out)) {
+    if (!ContentStream::parse(file_, streamOffset, streamLength, compressed, xref, pageBody->view(), out)) {
       pdfLogErr("Failed to parse page");
       return false;
     }

@@ -174,10 +174,9 @@ void writeBmpHeader2bit(Print& bmpOut, const int width, const int height) {
 }
 }  // namespace
 
-// Context for streaming PNG decompression
-// IMPORTANT: reader must be the first field - the uzlib callback casts uzlib_uncomp* to PngDecodeContext*
+// Context for streaming PNG decompression.
 struct PngDecodeContext {
-  InflateReader reader;  // Must be first — callback casts uzlib_uncomp* to PngDecodeContext*
+  InflateReader reader;
   FsFile* file;
 
   // PNG image properties
@@ -232,7 +231,8 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
 
 // uzlib callback: reads the next batch of IDAT data from the file
 static int pngIdatReadCallback(uzlib_uncomp* uncomp) {
-  auto* ctx = reinterpret_cast<PngDecodeContext*>(uncomp);
+  auto* ctx = static_cast<PngDecodeContext*>(uncomp->user_context);
+  if (!ctx) return -1;
 
   if (ctx->idatFinished) return -1;
 
@@ -563,6 +563,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
     free(ctx.previousRow);
     return false;
   }
+  ctx.reader.setUserContext(&ctx);
   ctx.reader.setReadCallback(pngIdatReadCallback);
   // PNG IDAT data is zlib-wrapped: consume the 2-byte zlib header (CMF + FLG)
   ctx.reader.skipZlibHeader();

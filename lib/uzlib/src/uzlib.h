@@ -81,6 +81,9 @@ typedef struct {
 } TINF_TREE;
 
 struct uzlib_uncomp {
+    /* Caller-owned context for streaming callbacks. */
+    void *user_context;
+
     /* Pointer to the next byte in the input buffer */
     const unsigned char *source;
     /* Pointer to the next byte past the input buffer (source_limit = source + len) */

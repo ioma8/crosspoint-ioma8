@@ -1,8 +1,8 @@
-#include "KOReaderCredentialCodec.h"
-
 #include <cassert>
 #include <iostream>
 #include <string>
+
+#include "KOReaderCredentialCodec.h"
 
 namespace obfuscation {
 

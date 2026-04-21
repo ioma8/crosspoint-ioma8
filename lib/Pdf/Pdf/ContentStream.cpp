@@ -762,7 +762,10 @@ float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)
 
 [[gnu::noinline]] std::string resolveResourcesDict(FsFile& file, const XrefTable& xref, std::string_view pageBody) {
   PdfFixedString<PDF_DICT_VALUE_MAX> r;
-  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  auto body = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!body) {
+    return {};
+  }
   std::string_view currentBody = pageBody;
   for (int depth = 0; depth < 16; ++depth) {
     if (PdfObject::getDictValue("/Resources", currentBody, r)) {
@@ -771,15 +774,15 @@ float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)
       if (r.size() >= 2 && r[0] == '<' && r[1] == '<') return std::string(r.view());
       const uint32_t rid = PdfObject::getDictRef("/Resources", currentBody);
       if (rid == 0) return std::string(r.view());
-      if (!xref.readDictForObject(file, rid, body)) return std::string(r.view());
-      return std::string(body.view());
+      if (!xref.readDictForObject(file, rid, *body)) return std::string(r.view());
+      return std::string(body->view());
     }
 
     const uint32_t parentId = PdfObject::getDictRef("/Parent", currentBody);
-    if (parentId == 0 || !xref.readDictForObject(file, parentId, body)) {
+    if (parentId == 0 || !xref.readDictForObject(file, parentId, *body)) {
       break;
     }
-    currentBody = body.view();
+    currentBody = body->view();
   }
   return {};
 }
@@ -801,11 +804,11 @@ float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)
   if (rid == 0) {
     return std::string(r.view());
   }
-  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-  if (!xref.readDictForObject(file, rid, body)) {
+  auto body = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!body || !xref.readDictForObject(file, rid, *body)) {
     return std::string(r.view());
   }
-  return std::string(body.view());
+  return std::string(body->view());
 }
 
 uint32_t resourceObjectIdForName(std::string_view dict, std::string_view name) {
@@ -945,12 +948,11 @@ class FontInfoCache {
   }
 };
 
-[[gnu::noinline]] static void updateCurrentCidMapForFont(FsFile& file, const XrefTable& xref,
-                                                         std::string_view fontDictBody, std::string_view fontName,
-                                                         uint8_t& currentFontStyle,
-                                                         FontInfoCache<PDF_MAX_FONT_CID_MAPS>& fontInfoCache,
-                                                         FontInfo& uncachedFontInfo, const ToUnicodeMap*& currentCidMap,
-                                                         SimpleFontEncoding& currentSimpleEncoding) {
+[[gnu::noinline]] static void updateCurrentCidMapForFont(
+    FsFile& file, const XrefTable& xref, std::string_view fontDictBody, std::string_view fontName,
+    uint8_t& currentFontStyle, FontInfoCache<PDF_MAX_FONT_CID_MAPS>& fontInfoCache, FontInfo& uncachedFontInfo,
+    PdfFixedString<PDF_OBJECT_BODY_MAX>& fontBodyScratch, const ToUnicodeMap*& currentCidMap,
+    SimpleFontEncoding& currentSimpleEncoding) {
   const uint32_t fid = fontObjectIdForName(fontDictBody, fontName);
   currentCidMap = nullptr;
   currentFontStyle = PdfTextStyleRegular;
@@ -959,12 +961,12 @@ class FontInfoCache {
     return;
   }
 
-  PdfFixedString<PDF_OBJECT_BODY_MAX> fbody;
-  if (!xref.readDictForObject(file, fid, fbody)) {
+  fontBodyScratch.clear();
+  if (!xref.readDictForObject(file, fid, fontBodyScratch)) {
     return;
   }
 
-  const std::string_view fbodyView = fbody.view();
+  const std::string_view fbodyView = fontBodyScratch.view();
   const bool usesMacRoman = (fbodyView.find("/MacRomanEncoding") != std::string_view::npos);
   const uint8_t dictStyle = fontStyleFromDict(fbodyView);
   currentFontStyle = dictStyle;
@@ -1023,23 +1025,24 @@ bool fillImageDescriptor(FsFile& file, const XrefTable& xref, uint32_t objId, Pd
   if (off == 0) {
     return false;
   }
-  PdfFixedString<PDF_OBJECT_BODY_MAX> body;
+  auto body = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
   uint32_t so = 0;
   uint32_t sl = 0;
-  if (!PdfObject::readAt(file, off, body, &so, &sl, &xref)) {
+  if (!body || !PdfObject::readAt(file, off, *body, &so, &sl, &xref)) {
     return false;
   }
   PdfFixedString<PDF_DICT_VALUE_MAX> st;
-  if (!PdfObject::getDictValue("/Subtype", body.view(), st)) return false;
+  if (!PdfObject::getDictValue("/Subtype", body->view(), st)) return false;
   while (!st.empty() && (st[0] == ' ' || st[0] == '\t')) st.erase_prefix(1);
   while (!st.empty() && (st[st.size() - 1] == ' ' || st[st.size() - 1] == '\t')) st.resize(st.size() - 1);
   if (st.view() != "/Image") return false;
 
   out.pdfStreamOffset = so;
   out.pdfStreamLength = sl;
-  out.width = static_cast<uint16_t>(PdfObject::getDictInt("/Width", body.view(), 0));
-  out.height = static_cast<uint16_t>(PdfObject::getDictInt("/Height", body.view(), 0));
-  if (body.view().find("/DCTDecode") != std::string_view::npos || body.view().find("/DCT") != std::string_view::npos) {
+  out.width = static_cast<uint16_t>(PdfObject::getDictInt("/Width", body->view(), 0));
+  out.height = static_cast<uint16_t>(PdfObject::getDictInt("/Height", body->view(), 0));
+  if (body->view().find("/DCTDecode") != std::string_view::npos ||
+      body->view().find("/DCT") != std::string_view::npos) {
     out.format = 0;
   } else {
     out.format = 1;
@@ -1547,8 +1550,9 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   auto ctmStackStorage = makeContentScratch<std::array<PdfMatrix, PDF_MAX_OP_STACK>>();
   auto runsStorage = makeContentScratch<PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS>>();
   auto opStackStorage = makeContentScratch<OpStack>();
+  auto fontBodyScratchStorage = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
   if (!fontInfoCacheStorage || !uncachedFontInfoStorage || !fontNameCacheStorage || !xobjNameCacheStorage ||
-      !ctmStackStorage || !runsStorage || !opStackStorage) {
+      !ctmStackStorage || !runsStorage || !opStackStorage || !fontBodyScratchStorage) {
     return false;
   }
   auto& fontInfoCache = *fontInfoCacheStorage;
@@ -1558,6 +1562,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   auto& ctmStack = *ctmStackStorage;
   auto& runs = *runsStorage;
   auto& stack = *opStackStorage;
+  auto& fontBodyScratch = *fontBodyScratchStorage;
   const ToUnicodeMap* currentCidMap = nullptr;
   SimpleFontEncoding currentSimpleFontEncoding = SimpleFontEncoding::WinAnsi;
   PdfMatrix currentCtm;
@@ -1792,7 +1797,7 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
         continue;
       }
       updateCurrentCidMapForFont(file, xref, fontDictBody, fontName, currentFontStyle, fontInfoCache, uncachedFontInfo,
-                                 currentCidMap, currentSimpleFontEncoding);
+                                 fontBodyScratch, currentCidMap, currentSimpleFontEncoding);
       stack.pop();
     } else if (opView == "Do" && !stack.empty()) {
       OpToken* nameToken = stack.back();

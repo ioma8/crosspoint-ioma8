@@ -8,7 +8,7 @@ The local experimental ContentStream changes caused the esp32-c6 spacing regress
 Increasing PDF_MAX_TMP_RUNS only masked the experimental parser regression and is not needed on the passing parser baseline	proven
 Deferring PDF cache metadata writes until after the first successful page parse reduces startup-path SD work while preserving cache behavior	needs further investigation
 Removing redundant existence checks before SD open calls reduces repeated SdFat path work and keeps the startup path simpler	needs further investigation
-Large/complex PDFs crash because PDF parsing allocates multiple large fixed buffers on task stack during getPage/content stream parsing	disproven
+Large/complex PDFs crash because PDF parsing allocates multiple large fixed buffers on task stack during getPage/content stream parsing	proven
 Large/complex PDFs crash because PdfReaderActivity caches wrapped text/image artifacts without enough bounds for complex pages	needs further investigation
 Large/complex PDFs crash because cache metadata/page cache SD operations leak handles or create excessive transient heap/file work	needs further investigation
 Complex PDF parsing repeatedly allocates and frees a 32 KiB InflateReader history window for content/object stream decoding	proven
@@ -19,3 +19,7 @@ Lazily allocating the shared InflateReader history window and releasing it from 
 ToUnicode CMap decode scratch buffers can move from permanent static storage to a retained heap workspace released on PDF close	proven
 Pdf.cpp catalog/page object scratch buffers do not need permanent static storage and can become scoped locals	proven
 Device crash at 0x4205c45a is stack overflow in PdfObject::readAt called from PdfOutlineParser::parse because outline scratch buffers were moved from static storage to stack locals	proven
+Device crash at 0x42057244 is stack overflow in ContentStream::updateCurrentCidMapForFont/runContentOperators from remaining stack-heavy parser state	proven
+Moving remaining ContentStream/Pdf object-body scratch buffers to scoped heap fixes the remaining ActivityManager stack overflow path	proven
+InflateReader-owned uzlib_uncomp on caller stack is enough to overflow ActivityManager stack during PDF flate decode	proven
+Moving uzlib_uncomp from InflateReader stack storage to scoped heap storage preserves parsing and removes the large decompressor state from caller stack	proven
