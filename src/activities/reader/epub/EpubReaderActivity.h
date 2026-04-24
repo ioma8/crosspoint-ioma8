@@ -29,6 +29,8 @@ class EpubReaderActivity final : public Activity {
   bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
   bool bookmarkChordActive = false;
+  bool thumbGenerationPending = false;
+  bool thumbGenerationArmed = false;
   uint8_t fontPrewarmSuppressPages = 0;
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
@@ -66,6 +68,7 @@ class EpubReaderActivity final : public Activity {
   uint8_t getCurrentBookProgressPercent() const;
   std::string getCurrentPageSnippet();
   void drawBookmarkIndicatorIfNeeded();
+  void maybeScheduleHomeThumbGeneration();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);

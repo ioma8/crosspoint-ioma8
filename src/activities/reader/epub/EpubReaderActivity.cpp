@@ -9,6 +9,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <esp_system.h>
+#include <freertos/task.h>
 
 #include "EpubReaderChapterSelectionActivity.h"
 #include "EpubReaderFootnotesActivity.h"
@@ -35,6 +36,27 @@ constexpr unsigned long skipChapterMs = 700;
 const std::vector<int> PAGE_TURN_LABELS = {1, 1, 3, 6, 12};
 constexpr uint32_t MIN_HEAP_FOR_PREWARM = 36000;
 constexpr uint8_t PREWARM_COOLDOWN_PAGES = 3;
+constexpr uint32_t THUMB_TASK_STACK_SIZE = 12288;
+
+struct EpubThumbTaskContext {
+  std::shared_ptr<Epub> epub;
+  int coverHeight;
+};
+
+void generateEpubThumbTask(void* param) {
+  std::unique_ptr<EpubThumbTaskContext> ctx(static_cast<EpubThumbTaskContext*>(param));
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  if (ctx && ctx->epub) {
+    const std::string thumbPath = ctx->epub->getThumbBmpPath(ctx->coverHeight);
+    if (!Storage.exists(thumbPath.c_str())) {
+      LOG_DBG("ERS", "Generating missing home thumb in background: %s", thumbPath.c_str());
+      ctx->epub->generateThumbBmp(ctx->coverHeight);
+    }
+  }
+
+  vTaskDelete(nullptr);
+}
 
 int clampPercent(int percent) {
   if (percent < 0) {
@@ -91,6 +113,8 @@ void EpubReaderActivity::onEnter() {
   APP_STATE.openEpubPath = epub->getPath();
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(epub->getPath(), epub->getTitle(), epub->getAuthor(), epub->getThumbBmpPath());
+  thumbGenerationPending = true;
+  thumbGenerationArmed = false;
 
   // Trigger first update
   requestUpdate();
@@ -105,6 +129,8 @@ void EpubReaderActivity::onExit() {
   bookmarks.clear();
   section.reset();
   epub.reset();
+  thumbGenerationPending = false;
+  thumbGenerationArmed = false;
 }
 
 void EpubReaderActivity::loop() {
@@ -755,6 +781,40 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
+  }
+
+  if (thumbGenerationPending && !thumbGenerationArmed) {
+    thumbGenerationArmed = true;
+    requestUpdate();
+  } else if (thumbGenerationPending) {
+    maybeScheduleHomeThumbGeneration();
+  }
+}
+
+void EpubReaderActivity::maybeScheduleHomeThumbGeneration() {
+  if (!thumbGenerationPending || !thumbGenerationArmed || !epub) {
+    return;
+  }
+
+  thumbGenerationPending = false;
+  thumbGenerationArmed = false;
+
+  const int coverHeight = UITheme::getInstance().getMetrics().homeCoverHeight;
+  const std::string thumbPath = epub->getThumbBmpPath(coverHeight);
+  if (Storage.exists(thumbPath.c_str())) {
+    return;
+  }
+
+  auto* ctx = new (std::nothrow) EpubThumbTaskContext{epub, coverHeight};
+  if (!ctx) {
+    LOG_ERR("ERS", "Failed to allocate thumb task context");
+    return;
+  }
+
+  TaskHandle_t task = nullptr;
+  if (xTaskCreate(&generateEpubThumbTask, "EpubThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &task) != pdPASS) {
+    LOG_ERR("ERS", "Failed to create EPUB thumb task");
+    delete ctx;
   }
 }
 
