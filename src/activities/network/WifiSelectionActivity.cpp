@@ -5,7 +5,7 @@
 #include <Logging.h>
 #include <WiFi.h>
 
-#include <map>
+#include <algorithm>
 
 #include "activities/util/KeyboardEntryActivity.h"
 #include "app/MappedInputManager.h"
@@ -116,9 +116,10 @@ void WifiSelectionActivity::processWifiScanResults() {
     return;
   }
 
-  // Scan complete, process results
-  // Use a map to deduplicate networks by SSID, keeping the strongest signal
-  std::map<std::string, WifiNetworkInfo> uniqueNetworks;
+  // Scan complete, process results. Use the destination vector directly to avoid
+  // allocating a map node plus duplicate std::string key for every visible AP.
+  networks.clear();
+  networks.reserve(scanResult > 0 ? static_cast<size_t>(scanResult) : 0);
 
   for (int i = 0; i < scanResult; i++) {
     std::string ssid = WiFi.SSID(i).c_str();
@@ -129,24 +130,20 @@ void WifiSelectionActivity::processWifiScanResults() {
       continue;
     }
 
-    // Check if we've already seen this SSID
-    auto it = uniqueNetworks.find(ssid);
-    if (it == uniqueNetworks.end() || rssi > it->second.rssi) {
+    auto it = std::find_if(networks.begin(), networks.end(),
+                           [&](const WifiNetworkInfo& network) { return network.ssid == ssid; });
+    if (it == networks.end()) {
       // New network or stronger signal than existing entry
       WifiNetworkInfo network;
       network.ssid = ssid;
       network.rssi = rssi;
       network.isEncrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
       network.hasSavedPassword = WIFI_STORE.hasSavedCredential(network.ssid);
-      uniqueNetworks[ssid] = network;
+      networks.push_back(std::move(network));
+    } else if (rssi > it->rssi) {
+      it->rssi = rssi;
+      it->isEncrypted = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
     }
-  }
-
-  // Convert map to vector
-  networks.clear();
-  for (const auto& pair : uniqueNetworks) {
-    // cppcheck-suppress useStlAlgorithm
-    networks.push_back(pair.second);
   }
 
   // Sort: saved-password networks first, then by signal strength (strongest first)

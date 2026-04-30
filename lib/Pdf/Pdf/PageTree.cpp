@@ -1,18 +1,13 @@
 #include "PageTree.h"
 
-#include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <new>
 
 #include "PdfLog.h"
 #include "PdfObject.h"
 
-bool debugPageTree() {
-  static int enabled = -1;
-  if (enabled < 0) {
-    enabled = (std::getenv("PDF_DEBUG_PAGETREE") != nullptr) ? 1 : 0;
-  }
-  return enabled == 1;
-}
+constexpr bool debugPageTree() { return false; }
 
 void logPageObject(uint32_t objId, const std::string_view body) {
   if (body.empty()) return;
@@ -88,6 +83,12 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
   pageOffsets.clear();
   pageObjectIds.clear();
 
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> body(new (std::nothrow) PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  if (!body) {
+    pdfLogErr("PageTree: body allocation failed");
+    return false;
+  }
+
   PdfFixedVector<uint32_t, kTraversalCap> stack;
   if (!stack.push_back(pagesObjId)) {
     return false;
@@ -97,23 +98,23 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
     const uint32_t objId = stack.back();
     stack.pop_back();
 
-    PdfFixedString<PDF_OBJECT_BODY_MAX> body;
-    if (!xref.readDictForObject(file, objId, body)) {
+    body->clear();
+    if (!xref.readDictForObject(file, objId, *body)) {
       if (debugPageTree()) {
         LOG_ERR("PageTree", "readDictForObject failed obj=%u", objId);
       }
       continue;
     }
     if (debugPageTree()) {
-      logPageObject(objId, body.view());
+      logPageObject(objId, body->view());
     }
 
-    if (typeIs(body.view(), "/Pages")) {
+    if (typeIs(body->view(), "/Pages")) {
       if (debugPageTree()) {
         LOG_ERR("PageTree", "type=Pages obj=%u", objId);
       }
       PdfFixedString<PDF_DICT_VALUE_MAX> kidsStr;
-      if (!PdfObject::getDictValue("/Kids", body.view(), kidsStr)) {
+      if (!PdfObject::getDictValue("/Kids", body->view(), kidsStr)) {
         if (debugPageTree()) {
           LOG_ERR("PageTree", "missing /Kids obj=%u", objId);
         }
@@ -127,7 +128,7 @@ bool PageTree::parse(FsFile& file, const XrefTable& xref, uint32_t pagesObjId) {
           return false;
         }
       }
-    } else if (typeIs(body.view(), "/Page")) {
+    } else if (typeIs(body->view(), "/Page")) {
       if (debugPageTree()) {
         LOG_ERR("PageTree", "type=Page obj=%u", objId);
       }

@@ -28,15 +28,21 @@ class XrefTable {
   uint8_t objStmContainers_[(PDF_MAX_OBJECTS + 7) / 8]{};
   uint16_t objStreamIdByObjectId_[PDF_MAX_OBJECTS]{};
   uint16_t inlineVictim_ = 0;
+  bool objStreamTempDirReady_ = false;
+  uint32_t cachedObjStreamTempId_ = 0;
+  PdfFixedString<96> cachedObjStreamTempPath_;
 
   bool parseXrefStream(FsFile& file, size_t fileSize, uint32_t xrefObjOffset);
   bool loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t targetObjId);
+  void removeCachedObjStreamTemp();
 
   bool insertInlineObject(uint32_t objNum, const PdfFixedString<PDF_INLINE_DICT_MAX>& d, const uint8_t* stm,
                           size_t stmLen);
   const InlineEntry* findInline(uint32_t objId) const;
 
  public:
+  ~XrefTable();
+
   bool parse(FsFile& file);
   uint32_t getOffset(uint32_t objId) const;
   uint32_t objectCount() const;

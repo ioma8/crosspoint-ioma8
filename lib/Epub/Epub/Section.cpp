@@ -14,6 +14,8 @@ constexpr uint8_t SECTION_FILE_VERSION = 18;
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t);
+constexpr uint16_t MAX_ANCHOR_MAP_ENTRIES = 2048;
+constexpr uint32_t MAX_ANCHOR_KEY_LEN = 128;
 }  // namespace
 
 uint32_t Section::onPageComplete(std::unique_ptr<Page> page) {
@@ -187,6 +189,7 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   writeSectionFileHeader(fontId, lineCompression, extraParagraphSpacing, paragraphAlignment, viewportWidth,
                          viewportHeight, hyphenationEnabled, embeddedStyle, imageRendering);
   std::vector<uint32_t> lut = {};
+  lut.reserve(256);
 
   // Derive the content base directory and image cache path prefix for the parser
   size_t lastSlash = localPath.find_last_of('/');
@@ -320,10 +323,19 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   f.seek(anchorMapOffset);
   uint16_t count;
   serialization::readPod(f, count);
+  if (count > MAX_ANCHOR_MAP_ENTRIES) {
+    LOG_ERR("SCT", "Invalid anchor map count %u", count);
+    f.close();
+    return std::nullopt;
+  }
   for (uint16_t i = 0; i < count; i++) {
     std::string key;
     uint16_t page;
-    serialization::readString(f, key);
+    if (!serialization::readString(f, key, MAX_ANCHOR_KEY_LEN)) {
+      LOG_ERR("SCT", "Invalid anchor key at index %u", i);
+      f.close();
+      return std::nullopt;
+    }
     serialization::readPod(f, page);
     if (key == anchor) {
       f.close();

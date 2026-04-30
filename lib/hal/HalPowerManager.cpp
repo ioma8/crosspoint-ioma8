@@ -87,6 +87,10 @@ uint16_t HalPowerManager::getBatteryPercentage() const {
 }
 
 HalPowerManager::Lock::Lock() {
+  if (powerManager.modeMutex == nullptr) {
+    LOG_ERR("PWR", "Power lock requested before HalPowerManager::begin()");
+    return;
+  }
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   if (powerManager.currentLockMode != None) {
     LOG_ERR("PWR", "Lock already held, ignore");
@@ -102,6 +106,9 @@ HalPowerManager::Lock::Lock() {
 }
 
 HalPowerManager::Lock::~Lock() {
+  if (powerManager.modeMutex == nullptr) {
+    return;
+  }
   xSemaphoreTake(powerManager.modeMutex, portMAX_DELAY);
   if (valid) {
     powerManager.currentLockMode = None;

@@ -30,6 +30,17 @@ void legacyDeobfuscate(std::string& data) {
     data[i] ^= LEGACY_OBFUSCATION_KEY[i % LEGACY_KEY_LENGTH];
   }
 }
+
+void secureClear(std::string& value) {
+  if (!value.empty()) {
+    volatile char* data = const_cast<volatile char*>(value.data());
+    for (size_t i = 0; i < value.size(); i++) {
+      data[i] = 0;
+    }
+  }
+  value.clear();
+  value.shrink_to_fit();
+}
 }  // namespace
 
 bool KOReaderCredentialStore::saveToFile() const {
@@ -157,8 +168,8 @@ std::string KOReaderCredentialStore::getMd5Password() const {
 bool KOReaderCredentialStore::hasCredentials() const { return !username.empty() && !password.empty(); }
 
 void KOReaderCredentialStore::clearCredentials() {
-  username.clear();
-  password.clear();
+  secureClear(username);
+  secureClear(password);
   saveToFile();
   LOG_DBG("KRS", "Cleared KOReader credentials");
 }

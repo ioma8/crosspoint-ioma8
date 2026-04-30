@@ -4,6 +4,9 @@
 #include <Logging.h>
 #include <Utf8.h>
 
+#include <algorithm>
+#include <cstring>
+
 #include "FontCacheManager.h"
 
 namespace {
@@ -215,7 +218,7 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   }
 
   // Calculate byte position and bit position
-  const uint16_t byteIndex = phyY * HalDisplay::DISPLAY_WIDTH_BYTES + (phyX / 8);
+  const uint32_t byteIndex = static_cast<uint32_t>(phyY) * HalDisplay::DISPLAY_WIDTH_BYTES + (phyX / 8);
   const uint8_t bitPosition = 7 - (phyX % 8);  // MSB first
 
   if (state) {
@@ -928,18 +931,6 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
   // Build result: prefix up to lastFitEnd, then the ellipsis.
   const int prefixLen = static_cast<int>(lastFitEnd - text);
 
-  // Stack buffer: 512 bytes covers practically all e-reader text lines.
-  // If the prefix is somehow longer, fall back to heap via std::string.
-  constexpr int STACK_BUF = 512;
-  if (prefixLen + ELLIPSIS_BYTES < STACK_BUF) {
-    char buf[STACK_BUF];
-    memcpy(buf, text, static_cast<size_t>(prefixLen));
-    memcpy(buf + prefixLen, ellipsis, ELLIPSIS_BYTES);
-    buf[prefixLen + ELLIPSIS_BYTES] = '\0';
-    return buf;  // std::string constructed from null-terminated stack buffer
-  }
-
-  // Fallback for abnormally long strings (should not occur in practice on this device).
   std::string result;
   result.reserve(static_cast<size_t>(prefixLen) + ELLIPSIS_BYTES);
   result.append(text, static_cast<size_t>(prefixLen));
@@ -949,56 +940,92 @@ std::string GfxRenderer::truncatedText(const int fontId, const char* text, const
 
 std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* text, const int maxWidth,
                                                   const int maxLines, const EpdFontFamily::Style style) const {
+  constexpr size_t kWrappedTextSegmentLimit = 512;
   std::vector<std::string> lines;
 
   if (!text || maxWidth <= 0 || maxLines <= 0) return lines;
 
-  std::string remaining = text;
   std::string currentLine;
+  const char* cursor = text;
 
-  while (!remaining.empty()) {
+  auto boundedWord = [kWrappedTextSegmentLimit](const char* start, size_t len) {
+    return std::string(start, std::min(len, kWrappedTextSegmentLimit));
+  };
+  auto boundedCStringLen = [](const char* start, size_t limit) {
+    size_t len = 0;
+    while (len < limit && start[len] != '\0') {
+      ++len;
+    }
+    return len;
+  };
+
+  while (*cursor != '\0') {
+    while (*cursor == ' ') {
+      ++cursor;
+    }
+    if (*cursor == '\0') {
+      break;
+    }
+
     if (static_cast<int>(lines.size()) == maxLines - 1) {
-      // Last available line: combine any word already started on this line with
-      // the rest of the text, then let truncatedText fit it with an ellipsis.
-      std::string lastContent = currentLine.empty() ? remaining : currentLine + " " + remaining;
+      // Last available line: keep input bounded so malformed or huge PDF text
+      // runs cannot force a large allocation before truncation.
+      if (currentLine.empty()) {
+        lines.push_back(truncatedText(fontId, boundedWord(cursor, boundedCStringLen(cursor, kWrappedTextSegmentLimit)).c_str(),
+                                      maxWidth, style));
+        return lines;
+      }
+      std::string lastContent = currentLine;
+      if (lastContent.size() < kWrappedTextSegmentLimit) {
+        lastContent.push_back(' ');
+        const size_t room = kWrappedTextSegmentLimit - lastContent.size();
+        lastContent.append(cursor, boundedCStringLen(cursor, room));
+      }
       lines.push_back(truncatedText(fontId, lastContent.c_str(), maxWidth, style));
       return lines;
     }
 
-    // Find next word
-    size_t spacePos = remaining.find(' ');
-    std::string word;
+    const char* wordStart = cursor;
+    while (*cursor != '\0' && *cursor != ' ') {
+      ++cursor;
+    }
+    const size_t wordLen = static_cast<size_t>(cursor - wordStart);
 
-    if (spacePos == std::string::npos) {
-      word = remaining;
-      remaining.clear();
+    const size_t oldLen = currentLine.size();
+    bool hitSegmentLimit = false;
+    if (!currentLine.empty() && currentLine.size() < kWrappedTextSegmentLimit) {
+      currentLine.push_back(' ');
+    }
+    if (currentLine.size() < kWrappedTextSegmentLimit) {
+      const size_t room = kWrappedTextSegmentLimit - currentLine.size();
+      const size_t appended = std::min(wordLen, room);
+      currentLine.append(wordStart, appended);
+      hitSegmentLimit = appended < wordLen;
     } else {
-      word = remaining.substr(0, spacePos);
-      remaining.erase(0, spacePos + 1);
+      hitSegmentLimit = true;
     }
 
-    std::string testLine = currentLine.empty() ? word : currentLine + " " + word;
-
-    if (getTextWidth(fontId, testLine.c_str(), style) <= maxWidth) {
-      currentLine = testLine;
+    if (!hitSegmentLimit && getTextWidth(fontId, currentLine.c_str(), style) <= maxWidth) {
+      continue;
     } else {
+      currentLine.resize(oldLen);
       if (!currentLine.empty()) {
         lines.push_back(currentLine);
         // If the carried-over word itself exceeds maxWidth, truncate it and
         // push it as a complete line immediately — storing it in currentLine
         // would allow a subsequent short word to be appended after the ellipsis.
-        if (getTextWidth(fontId, word.c_str(), style) > maxWidth) {
-          lines.push_back(truncatedText(fontId, word.c_str(), maxWidth, style));
+        currentLine = boundedWord(wordStart, wordLen);
+        if (getTextWidth(fontId, currentLine.c_str(), style) > maxWidth) {
+          lines.push_back(truncatedText(fontId, currentLine.c_str(), maxWidth, style));
           currentLine.clear();
           if (static_cast<int>(lines.size()) >= maxLines) return lines;
-        } else {
-          currentLine = word;
         }
       } else {
         // Single word wider than maxWidth: truncate and stop to avoid complicated
         // splitting rules (different between languages). Results in an aesthetically
         // pleasing end.
-        lines.push_back(truncatedText(fontId, word.c_str(), maxWidth, style));
+        currentLine = boundedWord(wordStart, wordLen);
+        lines.push_back(truncatedText(fontId, currentLine.c_str(), maxWidth, style));
         return lines;
       }
     }

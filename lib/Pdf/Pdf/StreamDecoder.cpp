@@ -4,14 +4,19 @@
 #include <Logging.h>
 
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace {
+
+constexpr size_t STREAM_DECODER_BUFFER_SIZE = 256;
 
 struct FileInflateReadCtx {
   FsFile* file = nullptr;
   uint32_t cur = 0;
   uint32_t left = 0;
-  uint8_t buf[256];
+  uint8_t* buf = nullptr;
+  uint32_t bufSize = 0;
   uint32_t blen = 0;
   uint32_t bpos = 0;
 };
@@ -24,7 +29,7 @@ static int fileInflateReadCb(uzlib_uncomp* u) {
     return c->buf[c->bpos++];
   }
   if (c->left == 0) return -1;
-  const uint32_t n = c->left < sizeof(c->buf) ? c->left : static_cast<uint32_t>(sizeof(c->buf));
+  const uint32_t n = c->left < c->bufSize ? c->left : c->bufSize;
   if (!c->file->seek(c->cur)) return -1;
   const int r = c->file->read(c->buf, n);
   if (r <= 0) return -1;
@@ -59,6 +64,12 @@ size_t StreamDecoder::flateDecode(FsFile& file, uint32_t streamOffset, uint32_t 
 
   FileInflateReadCtx ctx{};
   ctx.file = &file;
+  std::unique_ptr<uint8_t[]> inputBuffer(new (std::nothrow) uint8_t[STREAM_DECODER_BUFFER_SIZE]);
+  if (!inputBuffer) {
+    return 0;
+  }
+  ctx.buf = inputBuffer.get();
+  ctx.bufSize = STREAM_DECODER_BUFFER_SIZE;
 
   if (compressedLen >= 2) {
     if (!file.seek(streamOffset)) return 0;
@@ -156,6 +167,13 @@ bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint3
 
   FileInflateReadCtx readCtx{};
   readCtx.file = &file;
+  std::unique_ptr<uint8_t[]> ioBuffer(new (std::nothrow) uint8_t[STREAM_DECODER_BUFFER_SIZE * 2]);
+  if (!ioBuffer) {
+    return false;
+  }
+  readCtx.buf = ioBuffer.get();
+  readCtx.bufSize = STREAM_DECODER_BUFFER_SIZE;
+  uint8_t* out = ioBuffer.get() + STREAM_DECODER_BUFFER_SIZE;
 
   if (compressedLen >= 2) {
     if (!file.seek(streamOffset)) return false;
@@ -202,10 +220,9 @@ bool StreamDecoder::flateDecodeChunks(FsFile& file, uint32_t streamOffset, uint3
   ir.raw()->source = nullptr;
   ir.raw()->source_limit = nullptr;
 
-  uint8_t out[256];
   while (true) {
     size_t produced = 0;
-    const InflateStatus st = ir.readAtMost(out, sizeof(out), &produced);
+    const InflateStatus st = ir.readAtMost(out, STREAM_DECODER_BUFFER_SIZE, &produced);
     if (produced > 0 && !consumer(ctx, out, produced)) {
       LOG_ERR("PDF", "StreamDecoder: chunk consumer rejected %zu bytes", produced);
       return false;
@@ -236,11 +253,14 @@ bool StreamDecoder::flateDecodeBytesChunks(const uint8_t* compressed, size_t com
   }
   ir.setSource(compressed + zlibSkip, compressedLen - zlibSkip);
 
-  uint8_t out[256];
+  std::unique_ptr<uint8_t[]> out(new (std::nothrow) uint8_t[STREAM_DECODER_BUFFER_SIZE]);
+  if (!out) {
+    return false;
+  }
   while (true) {
     size_t produced = 0;
-    const InflateStatus st = ir.readAtMost(out, sizeof(out), &produced);
-    if (produced > 0 && !consumer(ctx, out, produced)) {
+    const InflateStatus st = ir.readAtMost(out.get(), STREAM_DECODER_BUFFER_SIZE, &produced);
+    if (produced > 0 && !consumer(ctx, out.get(), produced)) {
       LOG_ERR("PDF", "StreamDecoder: chunk consumer rejected %zu bytes", produced);
       return false;
     }

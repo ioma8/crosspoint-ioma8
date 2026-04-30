@@ -56,6 +56,10 @@ void CalibreSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (strncmp(SETTINGS.opdsServerUrl, kb.text.c_str(), sizeof(SETTINGS.opdsServerUrl)) ==
+                                   0) {
+                                 return;
+                               }
                                strncpy(SETTINGS.opdsServerUrl, kb.text.c_str(), sizeof(SETTINGS.opdsServerUrl) - 1);
                                SETTINGS.opdsServerUrl[sizeof(SETTINGS.opdsServerUrl) - 1] = '\0';
                                SETTINGS.saveToFile();
@@ -68,6 +72,10 @@ void CalibreSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (strncmp(SETTINGS.opdsUsername, kb.text.c_str(), sizeof(SETTINGS.opdsUsername)) ==
+                                   0) {
+                                 return;
+                               }
                                strncpy(SETTINGS.opdsUsername, kb.text.c_str(), sizeof(SETTINGS.opdsUsername) - 1);
                                SETTINGS.opdsUsername[sizeof(SETTINGS.opdsUsername) - 1] = '\0';
                                SETTINGS.saveToFile();
@@ -80,6 +88,10 @@ void CalibreSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (strncmp(SETTINGS.opdsPassword, kb.text.c_str(), sizeof(SETTINGS.opdsPassword)) ==
+                                   0) {
+                                 return;
+                               }
                                strncpy(SETTINGS.opdsPassword, kb.text.c_str(), sizeof(SETTINGS.opdsPassword) - 1);
                                SETTINGS.opdsPassword[sizeof(SETTINGS.opdsPassword) - 1] = '\0';
                                SETTINGS.saveToFile();

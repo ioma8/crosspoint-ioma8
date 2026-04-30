@@ -80,6 +80,11 @@ void ParsedText::addWord(std::string word, const EpdFontFamily::Style fontStyle,
                          const bool attachToPrevious) {
   if (word.empty()) return;
 
+  if (words.empty()) {
+    words.reserve(64);
+    wordStyles.reserve(64);
+    wordContinues.reserve(64);
+  }
   words.push_back(std::move(word));
   EpdFontFamily::Style combinedStyle = fontStyle;
   if (underline) {

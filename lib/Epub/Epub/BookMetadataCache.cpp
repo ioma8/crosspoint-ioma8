@@ -4,6 +4,8 @@
 #include <Serialization.h>
 #include <ZipFile.h>
 
+#include <Arduino.h>
+#include <limits>
 #include <vector>
 
 #include "FsHelpers.h"
@@ -13,6 +15,7 @@ constexpr uint8_t BOOK_CACHE_VERSION = 5;
 constexpr char bookBinFile[] = "/book.bin";
 constexpr char tmpSpineBinFile[] = "/spine.bin.tmp";
 constexpr char tmpTocBinFile[] = "/toc.bin.tmp";
+constexpr int MAX_SPINE_INDEX = std::numeric_limits<int16_t>::max();
 }  // namespace
 
 /* ============= WRITING / BUILDING FUNCTIONS ================ */
@@ -49,6 +52,12 @@ bool BookMetadataCache::beginTocPass() {
   }
 
   if (spineCount >= LARGE_SPINE_THRESHOLD) {
+    if (spineCount > MAX_SPINE_INDEX) {
+      LOG_ERR("BMC", "Too many spine items for int16 cache index: %d", spineCount);
+      spineFile.close();
+      tocFile.close();
+      return false;
+    }
     spineHrefIndex.clear();
     spineHrefIndex.reserve(spineCount);
     spineFile.seek(0);
@@ -153,6 +162,21 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   // Loop through spines from spine file matching up TOC indexes, calculating cumulative size and writing to book.bin
 
   // Build spineIndex->tocIndex mapping in one pass (O(n) instead of O(n*m))
+  if (spineCount > MAX_SPINE_INDEX) {
+    LOG_ERR("BMC", "Too many spine items for metadata cache: %d", spineCount);
+    bookFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
+  const size_t spineMapBytes = static_cast<size_t>(spineCount) * sizeof(int16_t);
+  if (spineMapBytes > ESP.getFreeHeap() / 3) {
+    LOG_ERR("BMC", "Not enough heap for spine TOC map: %u bytes", static_cast<unsigned>(spineMapBytes));
+    bookFile.close();
+    spineFile.close();
+    tocFile.close();
+    return false;
+  }
   std::vector<int16_t> spineToTocIndex(spineCount, -1);
   tocFile.seek(0);
   for (int j = 0; j < tocCount; j++) {

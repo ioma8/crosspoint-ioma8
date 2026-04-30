@@ -12,23 +12,9 @@
 WifiCredentialStore WifiCredentialStore::instance;
 
 namespace {
-// File format version (for binary migration)
-constexpr uint8_t WIFI_FILE_VERSION = 2;
-
 // File paths
 constexpr char WIFI_FILE_BIN[] = "/.crosspoint/wifi.bin";
 constexpr char WIFI_FILE_JSON[] = "/.crosspoint/wifi.json";
-constexpr char WIFI_FILE_BAK[] = "/.crosspoint/wifi.bin.bak";
-
-// Legacy obfuscation key - "CrossPoint" in ASCII (only used for binary migration)
-constexpr uint8_t LEGACY_OBFUSCATION_KEY[] = {0x43, 0x72, 0x6F, 0x73, 0x73, 0x50, 0x6F, 0x69, 0x6E, 0x74};
-constexpr size_t LEGACY_KEY_LENGTH = sizeof(LEGACY_OBFUSCATION_KEY);
-
-void legacyDeobfuscate(std::string& data) {
-  for (size_t i = 0; i < data.size(); i++) {
-    data[i] ^= LEGACY_OBFUSCATION_KEY[i % LEGACY_KEY_LENGTH];
-  }
-}
 }  // namespace
 
 bool WifiCredentialStore::saveToFile() const {
@@ -45,7 +31,9 @@ bool WifiCredentialStore::loadFromFile() {
       bool result = JsonSettingsIO::loadWifi(*this, json.c_str(), &resave);
       if (result && resave) {
         LOG_DBG("WCS", "Resaving JSON with obfuscated passwords");
-        saveToFile();
+        if (!saveToFile()) {
+          LOG_ERR("WCS", "Failed to resave WiFi credentials after format update");
+        }
       }
       return result;
     }
@@ -53,56 +41,14 @@ bool WifiCredentialStore::loadFromFile() {
 
   // Fall back to binary migration
   if (Storage.exists(WIFI_FILE_BIN)) {
-    if (loadFromBinaryFile()) {
-      if (saveToFile()) {
-        Storage.rename(WIFI_FILE_BIN, WIFI_FILE_BAK);
-        LOG_DBG("WCS", "Migrated wifi.bin to wifi.json");
-        return true;
-      } else {
-        LOG_ERR("WCS", "Failed to save wifi during migration");
-        return false;
-      }
-    }
+    LOG_ERR("WCS", "Legacy wifi.bin credentials are no longer migrated");
   }
 
   return false;
 }
 
 bool WifiCredentialStore::loadFromBinaryFile() {
-  FsFile file;
-  if (!Storage.openFileForRead("WCS", WIFI_FILE_BIN, file)) {
-    return false;
-  }
-
-  uint8_t version;
-  serialization::readPod(file, version);
-  if (version > WIFI_FILE_VERSION) {
-    LOG_DBG("WCS", "Unknown file version: %u", version);
-    file.close();
-    return false;
-  }
-
-  if (version >= 2) {
-    serialization::readString(file, lastConnectedSsid);
-  } else {
-    lastConnectedSsid.clear();
-  }
-
-  uint8_t count;
-  serialization::readPod(file, count);
-
-  credentials.clear();
-  for (uint8_t i = 0; i < count && i < MAX_NETWORKS; i++) {
-    WifiCredential cred;
-    serialization::readString(file, cred.ssid);
-    serialization::readString(file, cred.password);
-    legacyDeobfuscate(cred.password);
-    credentials.push_back(cred);
-  }
-
-  file.close();
-  // LOG_DBG("WCS", "Loaded %zu WiFi credentials from binary file", credentials.size());
-  return true;
+  return false;
 }
 
 bool WifiCredentialStore::addCredential(const std::string& ssid, const std::string& password) {
@@ -110,6 +56,10 @@ bool WifiCredentialStore::addCredential(const std::string& ssid, const std::stri
   const auto cred = find_if(credentials.begin(), credentials.end(),
                             [&ssid](const WifiCredential& cred) { return cred.ssid == ssid; });
   if (cred != credentials.end()) {
+    if (cred->password == password) {
+      LOG_DBG("WCS", "Credentials unchanged for: %s", ssid.c_str());
+      return true;
+    }
     cred->password = password;
     LOG_DBG("WCS", "Updated credentials for: %s", ssid.c_str());
     return saveToFile();
@@ -157,7 +107,9 @@ bool WifiCredentialStore::hasSavedCredential(const std::string& ssid) const { re
 void WifiCredentialStore::setLastConnectedSsid(const std::string& ssid) {
   if (lastConnectedSsid != ssid) {
     lastConnectedSsid = ssid;
-    saveToFile();
+    if (!saveToFile()) {
+      LOG_ERR("WCS", "Failed to save last connected SSID");
+    }
   }
 }
 
@@ -166,13 +118,17 @@ const std::string& WifiCredentialStore::getLastConnectedSsid() const { return la
 void WifiCredentialStore::clearLastConnectedSsid() {
   if (!lastConnectedSsid.empty()) {
     lastConnectedSsid.clear();
-    saveToFile();
+    if (!saveToFile()) {
+      LOG_ERR("WCS", "Failed to clear last connected SSID on disk");
+    }
   }
 }
 
 void WifiCredentialStore::clearAll() {
   credentials.clear();
   lastConnectedSsid.clear();
-  saveToFile();
+  if (!saveToFile()) {
+    LOG_ERR("WCS", "Failed to clear WiFi credentials on disk");
+  }
   LOG_DBG("WCS", "Cleared all WiFi credentials");
 }

@@ -21,7 +21,7 @@ class EpubReaderFootnotesActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
-  const std::vector<FootnoteEntry>& footnotes;
+  std::vector<FootnoteEntry> footnotes;
   int selectedIndex = 0;
   int scrollOffset = 0;
   ButtonNavigator buttonNavigator;

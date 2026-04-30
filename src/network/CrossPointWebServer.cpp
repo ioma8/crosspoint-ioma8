@@ -11,7 +11,10 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
 
 #include "WebDAVHandler.h"
 #include "app/CrossPointSettings.h"
@@ -22,6 +25,10 @@
 #include "html/js/jszip_minJs.generated.h"
 
 namespace {
+constexpr size_t WEB_FILE_NAME_BUFFER_SIZE = 500;
+constexpr size_t WEB_JSON_OUTPUT_BUFFER_SIZE = 512;
+constexpr size_t WEB_SETTING_STRING_BUFFER_SIZE = 256;
+
 // Folders/files to hide from the web interface file browser
 // Note: Items starting with "." are automatically hidden
 const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
@@ -40,15 +47,15 @@ CrossPointWebServer* wsInstance = nullptr;
 
 // WebSocket upload state
 FsFile wsUploadFile;
-String wsUploadFileName;
-String wsUploadPath;
+std::string wsUploadFileName;
+std::string wsUploadPath;
 size_t wsUploadSize = 0;
 size_t wsUploadReceived = 0;
 unsigned long wsUploadStartTime = 0;
 bool wsUploadInProgress = false;
 uint8_t wsUploadClientNum = 255;  // 255 = no active upload client
 size_t wsLastProgressSent = 0;
-String wsLastCompleteName;
+std::string wsLastCompleteName;
 size_t wsLastCompleteSize = 0;
 unsigned long wsLastCompleteAt = 0;
 
@@ -115,6 +122,25 @@ bool isSafeUploadName(const String& name) {
     return false;
   }
   return name.indexOf('/') < 0 && name.indexOf('\\') < 0 && name.indexOf("..") < 0;
+}
+
+bool getSettingsStringField(const SettingInfo& setting, char*& outPtr) {
+  if (setting.stringMaxLen == 0 || setting.stringOffset >= sizeof(CrossPointSettings) ||
+      setting.stringMaxLen > sizeof(CrossPointSettings) - setting.stringOffset) {
+    LOG_ERR("WEB", "Invalid string setting metadata for key: %s", setting.key ? setting.key : "(null)");
+    outPtr = nullptr;
+    return false;
+  }
+
+  outPtr = reinterpret_cast<char*>(&SETTINGS) + setting.stringOffset;
+  return true;
+}
+
+bool getSettingsStringField(const SettingInfo& setting, const char*& outPtr) {
+  char* ptr = nullptr;
+  const bool ok = getSettingsStringField(setting, ptr);
+  outPtr = ptr;
+  return ok;
 }
 
 bool requireWebAuth(WebServer* server) {
@@ -283,9 +309,9 @@ void CrossPointWebServer::begin() {
 
 void CrossPointWebServer::abortWsUpload(const char* tag) {
   wsUploadFile.close();
-  String filePath = wsUploadPath;
+  String filePath = wsUploadPath.c_str();
   if (!filePath.endsWith("/")) filePath += "/";
-  filePath += wsUploadFileName;
+  filePath += wsUploadFileName.c_str();
   if (Storage.remove(filePath.c_str())) {
     LOG_DBG(tag, "Deleted incomplete upload: %s", filePath.c_str());
   } else {
@@ -445,7 +471,7 @@ void CrossPointWebServer::handleStatus() const {
   server->send(200, "application/json", json);
 }
 
-void CrossPointWebServer::scanFiles(const char* path, const std::function<void(FileInfo)>& callback) const {
+void CrossPointWebServer::scanFiles(const char* path, FileScanCallback callback, void* context) const {
   FsFile root = Storage.open(path);
   if (!root) {
     LOG_DBG("WEB", "Failed to open directory: %s", path);
@@ -460,11 +486,17 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
 
   LOG_DBG("WEB", "Scanning files in: %s", path);
 
+  std::unique_ptr<char[]> name(new (std::nothrow) char[WEB_FILE_NAME_BUFFER_SIZE]);
+  if (!name) {
+    LOG_ERR("WEB", "Failed to allocate file scan name buffer");
+    root.close();
+    return;
+  }
+
   FsFile file = root.openNextFile();
-  char name[500];
   while (file) {
-    file.getName(name, sizeof(name));
-    auto fileName = String(name);
+    file.getName(name.get(), WEB_FILE_NAME_BUFFER_SIZE);
+    auto fileName = String(name.get());
 
     // Skip hidden items (starting with ".")
     bool shouldHide = !SETTINGS.showHiddenFiles && fileName.startsWith(".");
@@ -492,7 +524,7 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
         info.isEpub = isEpubFile(info.name);
       }
 
-      callback(info);
+      callback(info, context);
     }
 
     file.close();
@@ -524,32 +556,49 @@ void CrossPointWebServer::handleFileListData() const {
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
   server->sendContent("[");
-  char output[512];
-  constexpr size_t outputSize = sizeof(output);
+  std::unique_ptr<char[]> output(new (std::nothrow) char[WEB_JSON_OUTPUT_BUFFER_SIZE]);
+  if (!output) {
+    server->sendContent("]");
+    server->sendContent("");
+    LOG_ERR("WEB", "Failed to allocate file list output buffer");
+    return;
+  }
   bool seenFirst = false;
   JsonDocument doc;
 
-  scanFiles(currentPath.c_str(), [this, &output, &doc, seenFirst](const FileInfo& info) mutable {
-    doc.clear();
-    doc["name"] = info.name;
-    doc["size"] = info.size;
-    doc["isDirectory"] = info.isDirectory;
-    doc["isEpub"] = info.isEpub;
+  struct FileListContext {
+    const CrossPointWebServer* self;
+    char* output;
+    size_t outputSize;
+    bool seenFirst;
+    JsonDocument* doc;
+  } context{this, output.get(), WEB_JSON_OUTPUT_BUFFER_SIZE, false, &doc};
 
-    const size_t written = serializeJson(doc, output, outputSize);
-    if (written >= outputSize) {
-      // JSON output truncated; skip this entry to avoid sending malformed JSON
-      LOG_DBG("WEB", "Skipping file entry with oversized JSON for name: %s", info.name.c_str());
-      return;
-    }
+  scanFiles(
+      currentPath.c_str(),
+      [](const FileInfo& info, void* rawContext) {
+        auto& ctx = *static_cast<FileListContext*>(rawContext);
+        JsonDocument& doc = *ctx.doc;
+        doc.clear();
+        doc["name"] = info.name;
+        doc["size"] = info.size;
+        doc["isDirectory"] = info.isDirectory;
+        doc["isEpub"] = info.isEpub;
 
-    if (seenFirst) {
-      server->sendContent(",");
-    } else {
-      seenFirst = true;
-    }
-    server->sendContent(output);
-  });
+        const size_t written = serializeJson(doc, ctx.output, ctx.outputSize);
+        if (written >= ctx.outputSize) {
+          LOG_DBG("WEB", "Skipping file entry with oversized JSON for name: %s", info.name.c_str());
+          return;
+        }
+
+        if (ctx.seenFirst) {
+          ctx.self->server->sendContent(",");
+        } else {
+          ctx.seenFirst = true;
+        }
+        ctx.self->server->sendContent(ctx.output);
+      },
+      &context);
   server->sendContent("]");
   // End of streamed response, empty chunk to signal client
   server->sendContent("");
@@ -606,17 +655,22 @@ void CrossPointWebServer::handleDownload() const {
 
   NetworkClient client = server->client();
   const size_t chunkSize = 256;
-  uint8_t buffer[chunkSize];
+  std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[chunkSize]);
+  if (!buffer) {
+    LOG_ERR("WebServer", "Failed to allocate download buffer");
+    file.close();
+    return;
+  }
 
   bool downloadOk = true;
   while (downloadOk && file.available()) {
-    int result = file.read(buffer, chunkSize);
+    int result = file.read(buffer.get(), chunkSize);
     if (result <= 0) break;
     size_t bytesRead = static_cast<size_t>(result);
     size_t totalWritten = 0;
     while (totalWritten < bytesRead) {
       esp_task_wdt_reset();
-      size_t wrote = client.write(buffer + totalWritten, bytesRead - totalWritten);
+      size_t wrote = client.write(buffer.get() + totalWritten, bytesRead - totalWritten);
       if (wrote == 0) {
         downloadOk = false;
         break;
@@ -1140,15 +1194,28 @@ void CrossPointWebServer::handleGetSettings() const {
   server->send(200, "application/json", "");
   server->sendContent("[");
 
-  char output[512];
-  constexpr size_t outputSize = sizeof(output);
+  std::unique_ptr<char[]> output(new (std::nothrow) char[WEB_JSON_OUTPUT_BUFFER_SIZE]);
+  if (!output) {
+    server->sendContent("]");
+    server->sendContent("");
+    LOG_ERR("WEB", "Failed to allocate settings output buffer");
+    return;
+  }
   bool seenFirst = false;
   JsonDocument doc;
+  std::unique_ptr<char[]> settingStringValue(new (std::nothrow) char[WEB_SETTING_STRING_BUFFER_SIZE]());
+  if (!settingStringValue) {
+    server->sendContent("]");
+    server->sendContent("");
+    LOG_ERR("WEB", "Failed to allocate settings string buffer");
+    return;
+  }
 
   for (const auto& s : settings) {
     if (!s.key) continue;  // Skip ACTION-only entries
 
     doc.clear();
+    settingStringValue[0] = '\0';
     doc["key"] = s.key;
     doc["name"] = I18N.get(s.nameId);
     doc["category"] = I18N.get(s.category);
@@ -1189,7 +1256,13 @@ void CrossPointWebServer::handleGetSettings() const {
         if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
-          doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
+          const char* ptr = nullptr;
+          if (getSettingsStringField(s, ptr)) {
+            const size_t copyLen = std::min(strnlen(ptr, s.stringMaxLen), WEB_SETTING_STRING_BUFFER_SIZE - 1);
+            memcpy(settingStringValue.get(), ptr, copyLen);
+            settingStringValue[copyLen] = '\0';
+            doc["value"] = settingStringValue.get();
+          }
         }
         break;
       }
@@ -1197,8 +1270,8 @@ void CrossPointWebServer::handleGetSettings() const {
         continue;
     }
 
-    const size_t written = serializeJson(doc, output, outputSize);
-    if (written >= outputSize) {
+    const size_t written = serializeJson(doc, output.get(), WEB_JSON_OUTPUT_BUFFER_SIZE);
+    if (written >= WEB_JSON_OUTPUT_BUFFER_SIZE) {
       LOG_DBG("WEB", "Skipping oversized setting JSON for: %s", s.key);
       continue;
     }
@@ -1208,7 +1281,7 @@ void CrossPointWebServer::handleGetSettings() const {
     } else {
       seenFirst = true;
     }
-    server->sendContent(output);
+    server->sendContent(output.get());
   }
 
   server->sendContent("]");
@@ -1269,12 +1342,15 @@ void CrossPointWebServer::handlePostSettings() {
         break;
       }
       case SettingType::STRING: {
-        const std::string val = doc[s.key].as<std::string>();
+        const char* val = doc[s.key] | "";
         if (s.stringSetter) {
           s.stringSetter(val);
         } else if (s.stringMaxLen > 0) {
-          char* ptr = reinterpret_cast<char*>(&SETTINGS) + s.stringOffset;
-          strncpy(ptr, val.c_str(), s.stringMaxLen - 1);
+          char* ptr = nullptr;
+          if (!getSettingsStringField(s, ptr)) {
+            break;
+          }
+          strncpy(ptr, val, s.stringMaxLen - 1);
           ptr[s.stringMaxLen - 1] = '\0';
         }
         applied++;
@@ -1343,7 +1419,7 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         int secondColon = msg.indexOf(':', firstColon + 1);
 
         if (firstColon > 0 && secondColon > 0) {
-          wsUploadFileName = msg.substring(6, firstColon);
+          wsUploadFileName = msg.substring(6, firstColon).c_str();
           String sizeToken = msg.substring(firstColon + 1, secondColon);
           bool sizeValid = sizeToken.length() > 0;
           int digitStart = (sizeValid && sizeToken[0] == '+') ? 1 : 0;
@@ -1364,20 +1440,22 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
             return;
           }
           wsUploadSize = static_cast<size_t>(parsedSize);
-          wsUploadPath = normalizeWebPath(msg.substring(secondColon + 1));
+          wsUploadPath = normalizeWebPath(msg.substring(secondColon + 1)).c_str();
           wsUploadReceived = 0;
           wsLastProgressSent = 0;
           wsUploadStartTime = millis();
 
-          if (!isSafeUploadName(wsUploadFileName) || isProtectedPath(wsUploadPath)) {
+          const String uploadFileName = wsUploadFileName.c_str();
+          const String uploadPath = wsUploadPath.c_str();
+          if (!isSafeUploadName(uploadFileName) || isProtectedPath(uploadPath)) {
             wsServer->sendTXT(num, "ERROR:Invalid upload path or filename");
             return;
           }
 
           // Build file path
-          String filePath = wsUploadPath;
+          String filePath = wsUploadPath.c_str();
           if (!filePath.endsWith("/")) filePath += "/";
-          filePath += wsUploadFileName;
+          filePath += wsUploadFileName.c_str();
           filePath = normalizeWebPath(filePath);
           if (isProtectedPath(filePath)) {
             wsServer->sendTXT(num, "ERROR:Cannot upload protected items");
@@ -1471,13 +1549,13 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
         unsigned long elapsed = millis() - wsUploadStartTime;
         float kbps = (elapsed > 0) ? (wsUploadSize / 1024.0) / (elapsed / 1000.0) : 0;
 
-        LOG_DBG("WS", "Upload complete: %s (%d bytes in %lu ms, %.1f KB/s)", wsUploadFileName.c_str(), wsUploadSize,
+        LOG_DBG("WS", "Upload complete: %s (%zu bytes in %lu ms, %.1f KB/s)", wsUploadFileName.c_str(), wsUploadSize,
                 elapsed, kbps);
 
         // Clear epub cache to prevent stale metadata issues when overwriting files
-        String filePath = wsUploadPath;
+        String filePath = wsUploadPath.c_str();
         if (!filePath.endsWith("/")) filePath += "/";
-        filePath += wsUploadFileName;
+        filePath += wsUploadFileName.c_str();
         clearEpubCacheIfNeeded(filePath);
 
         wsServer->sendTXT(num, "DONE");

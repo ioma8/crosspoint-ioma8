@@ -212,8 +212,8 @@ void verifyPowerButtonDuration() {
   // Subtract the current time, because inputManager only starts counting the HeldTime from the first update()
   // This way, we remove the time we already took to reach here from the duration,
   // assuming the button was held until now from millis()==0 (i.e. device start time).
-  const uint16_t calibration = start;
-  const uint16_t calibratedPressDuration =
+  const unsigned long calibration = start;
+  const unsigned long calibratedPressDuration =
       (calibration < SETTINGS.getPowerButtonDuration()) ? SETTINGS.getPowerButtonDuration() - calibration : 1;
 
   gpio.update();
@@ -407,7 +407,7 @@ void loop() {
   }
 
   static bool screenshotButtonsReleased = true;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (gpio.isPressed(HalGPIO::BTN_POWER) && mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
       {
@@ -430,7 +430,7 @@ void loop() {
 
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    if (mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
       return;
     }
     enterDeepSleep();

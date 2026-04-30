@@ -1,5 +1,6 @@
 #pragma once
 
+#include <DNSServer.h>
 #include <functional>
 #include <memory>
 #include <string>
@@ -36,6 +37,7 @@ class CrossPointWebServerActivity final : public Activity {
 
   // Web server - owned by this activity
   std::unique_ptr<CrossPointWebServer> webServer;
+  std::unique_ptr<DNSServer> dnsServer;
 
   // Server status
   std::string connectedIP;

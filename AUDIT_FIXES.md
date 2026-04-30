@@ -68,3 +68,64 @@
 - ACT-H2: Replaced EPUB reader std::shared_ptr ownership with unique_ptr in EpubReaderActivity and raw non-owning pointers for bounded sub-activities, section parsing, progress mapping, and thumbnail task context.
 
 - ACT-H3: Replaced XTC reader std::shared_ptr ownership with unique_ptr in XtcReaderActivity and raw non-owning pointers for the chapter selector and thumbnail task context.
+
+- KOR-M1: Rejected plaintext KOReader `password` JSON fallback during credential decoding; only obfuscated `password_obf` is accepted.
+
+- NET-M2: Added an unchanged-password guard in WifiCredentialStore::addCredential() so reconnecting to an already stored network does not rewrite wifi.json.
+
+- NET-M1: Removed the legacy wifi.bin XOR migration key and disabled legacy binary WiFi credential migration so the static CrossPoint obfuscation key is no longer shipped in firmware.
+
+- NET-M3: Added bounds-checked SettingInfo string field access before reading CrossPointSettings string buffers for the web settings API.
+- NET-M4: Added the same bounds check before writing CrossPointSettings string buffers from web settings POST data.
+- NET-M5: Removed per-static-string std::string allocation from handlePostSettings() and changed dynamic web string setters to receive const char* from the JSON document.
+
+- ZIP-M2: Checked Print::write() return values in the STORED ZIP streaming path and fail the read when output writes are short.
+
+- EPUB-M3: Added cached image dimension validation against zero and screen bounds before allocating row buffers or entering the cache render loop.
+
+- EPUB-M5: Reserved initial LUT capacity during section creation to avoid repeated reallocations while indexing chapter pages.
+
+- EPUB-M6: Bounded section anchor-map deserialization by limiting entry count and anchor key length before reading corrupt cache data.
+
+- PDF-M1: Replaced xref `firstObj + count` range checks with overflow-safe comparisons before seeking over subsection rows.
+- PNG-M2: Guarded PNG non-IDAT chunk skip arithmetic so `chunkLen + 4` cannot wrap before seekCur().
+- IMG-M1: Added non-throwing JPEG scaler accumulator allocations with explicit OOM failure handling before row accumulation.
+- IMG-M2: Widened PNG scaler rowCount from uint16_t to uint32_t to avoid overflow during downscaling accumulation.
+
+- ACT-M1: Changed EpubReaderFootnotesActivity to copy the footnote vector instead of storing a reference to parent activity state.
+- ACT-M3: Split KOReader sync result navigation so Up/Left move to the previous option and Down/Right move to the next option.
+
+- GFX-M2: Widened GfxRenderer::drawPixel() framebuffer byte index to uint32_t to avoid narrowing if display dimensions grow.
+- GFX-L1: Reset Bitmap::prevRowY in rewindToData() so rewound reads restart row-dependent dithering state correctly.
+- GFX-L2: Added width/height validation in createBmpHeader() before computing row and image sizes.
+- PDF-L1: Replaced FreeRTOS-dead getenv-based page-tree debug detection with a constexpr false helper.
+- XTC-L1: Rejected non-positive thumbnail heights in Xtc::generateThumbBmp() before scale and malloc calculations.
+- ACT-L2: Removed the unused EpubReaderActivity::skipNextButtonCheck field.
+- MAIN-L1: Replaced raw BTN_DOWN screenshot chord checks with MappedInputManager::Button::Down.
+- MAIN-L2: Widened boot-time power-button calibration values from uint16_t to unsigned long to avoid millis() truncation.
+- SET-M3: Changed legacy binary settings version handling to reject only newer unsupported versions so downgrades no longer force a settings reset.
+- NET-L3: Logged failed WifiCredentialStore saveToFile() results when updating last-connected SSID, clearing credentials, or resaving migrated JSON.
+- HAL-L1: Guarded HalPowerManager::Lock construction and destruction against a null modeMutex before begin() initializes the power manager.
+- KOR-L1: Added explicit zeroing of KOReader username/password string storage before clearing credentials.
+- EPUB-M4: Rejected EPUB metadata caches with spine counts beyond int16_t index capacity before casting spine indices.
+- EPUB-L1: Reserved initial ParsedText word/style/continuation vector capacity before hot-path word accumulation.
+- EPUB-L2: Reserved CSS split helper output vectors based on delimiter or whitespace counts before push_back loops.
+- EPUB-L3: Added a free-heap pre-check before allocating the spine-to-TOC index vector for EPUB metadata cache generation.
+- KOR-M2: ProgressMapper now accepts raw non-owning Epub pointers instead of std::shared_ptr<Epub>, removing atomic refcount overhead from KOReader progress mapping.
+- ACT-L3: SettingsActivity no longer saves settings again from the Back exit path after individual setting changes have already been saved.
+- SET-M1: Added same-content guards in JSON settings persistence so CrossPointSettings::saveToFile() skips unchanged SD writes.
+- SET-M2: Added no-op guards for unchanged recent-book add/update calls and unchanged recent-books JSON output before writing to SD.
+- ACT-M2: Replaced WiFi scan deduplication std::map with direct vector find/update logic to avoid red-black tree node and duplicate key allocations.
+- GFX-M1: Removed broken reverse-row Floyd-Steinberg diffusion for left-to-right bitmap readers so error is no longer sent to already-processed pixels.
+- ACT-L1: Moved the captive-portal DNSServer pointer into CrossPointWebServerActivity ownership via unique_ptr so re-entering the activity cannot leak a file-scope global.
+- ACT-L4: Added unchanged-value guards before Calibre and KOReader keyboard confirmations save settings or credential files.
+- FS-L1: Root-anchored FsHelpers::normalisePath() by ignoring leading/current-directory traversal and applying final-component ".." handling.
+- READER-M1: Changed ReaderBookmarkStore loading to capped chunked reads instead of byte-by-byte SD reads with unbounded reserve.
+- NET-L7: Added WebDAV .davtmp path-length validation before creating or cleaning temp upload paths.
+- GFX-L4: Replaced linear duplicate scans in Utf8CodepointCollector::add() with lower_bound insertion into a sorted fixed array.
+- NET-L4: Replaced CrossPointWebServer::scanFiles() std::function callback with a function pointer plus context pointer to avoid heap-allocated file-list closures.
+- GFX-L3: Reworked GfxRenderer::wrappedText() to scan the input with pointers and mutate one reusable line buffer instead of allocating word/testLine strings in the layout loop.
+- PDF-L2: Marked the MD5-over-HTTP exposure resolved by the existing KOR-C2 fix, which prevents plaintext Basic Auth from being sent to non-HTTPS KOReader sync URLs.
+- RENDER-M1: Replaced EpubReaderMenuActivity per-render progress std::string/std::to_string concatenation with snprintf into a fixed stack buffer.
+- PDF-M2: Changed PDF resource and font dictionary resolution to fill fixed-capacity PdfFixedString buffers instead of returning heap-allocated std::string values by value.
+- NET-L5: Replaced persistent global Arduino String WebSocket upload state fields with std::string storage and short-lived String adapters only at API boundaries.

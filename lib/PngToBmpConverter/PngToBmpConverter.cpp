@@ -6,6 +6,9 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
+#include <memory>
+#include <new>
 
 #include "BitmapHelpers.h"
 
@@ -18,6 +21,8 @@ constexpr bool USE_FLOYD_STEINBERG = false;
 constexpr bool USE_PRESCALE = true;
 constexpr int TARGET_MAX_WIDTH = 480;
 constexpr int TARGET_MAX_HEIGHT = 800;
+constexpr size_t PNG_READ_BUFFER_SIZE = 2048;
+constexpr size_t PNG_PALETTE_BUFFER_SIZE = 256 * 3;
 // ============================================================================
 
 // BMP writing helpers (same as JpegToBmpConverter)
@@ -196,10 +201,11 @@ struct PngDecodeContext {
   bool idatFinished;             // no more IDAT chunks
 
   // File read buffer for feeding uzlib
-  uint8_t readBuf[2048];
+  uint8_t* readBuf;
+  size_t readBufSize;
 
   // Palette for indexed color (type 3)
-  uint8_t palette[256 * 3];
+  uint8_t* palette;
   int paletteSize;
 };
 
@@ -220,6 +226,7 @@ static bool findNextIdatChunk(PngDecodeContext& ctx) {
 
     // Skip this chunk's data + 4-byte CRC
     // Use seek to skip efficiently
+    if (chunkLen > std::numeric_limits<uint32_t>::max() - 4) return false;
     if (!ctx.file->seekCur(chunkLen + 4)) return false;
 
     // If we hit IEND, there are no more chunks
@@ -249,7 +256,7 @@ static int pngIdatReadCallback(uzlib_uncomp* uncomp) {
   }
 
   // Read from current IDAT chunk into the read buffer
-  size_t toRead = sizeof(ctx->readBuf);
+  size_t toRead = ctx->readBufSize;
   if (toRead > ctx->chunkBytesRemaining) toRead = ctx->chunkBytesRemaining;
 
   int bytesRead = ctx->file->read(ctx->readBuf, toRead);
@@ -500,7 +507,16 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
 
   // Initialize decode context
   PngDecodeContext ctx = {};
+  std::unique_ptr<uint8_t[]> readBuf(new (std::nothrow) uint8_t[PNG_READ_BUFFER_SIZE]);
+  std::unique_ptr<uint8_t[]> palette(new (std::nothrow) uint8_t[PNG_PALETTE_BUFFER_SIZE]);
+  if (!readBuf || !palette) {
+    LOG_ERR("PNG", "Failed to allocate PNG decode buffers");
+    return false;
+  }
   ctx.file = &pngFile;
+  ctx.readBuf = readBuf.get();
+  ctx.readBufSize = PNG_READ_BUFFER_SIZE;
+  ctx.palette = palette.get();
   ctx.width = width;
   ctx.height = height;
   ctx.bitDepth = bitDepth;
@@ -638,13 +654,25 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
 
   // Scaling accumulators
   uint32_t* rowAccum = nullptr;
-  uint16_t* rowCount = nullptr;
+  uint32_t* rowCount = nullptr;
   int currentOutY = 0;
   uint32_t nextOutY_srcStart = 0;
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint16_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = new (std::nothrow) uint32_t[outWidth]();
+    if (!rowAccum || !rowCount) {
+      LOG_ERR("PNG", "Failed to allocate scaling accumulators");
+      delete[] rowAccum;
+      delete[] rowCount;
+      delete atkinsonDitherer;
+      delete fsDitherer;
+      delete atkinson1BitDitherer;
+      free(rowBuffer);
+      free(ctx.currentRow);
+      free(ctx.previousRow);
+      return false;
+    }
     nextOutY_srcStart = scaleY_fp;
   }
 
@@ -795,7 +823,7 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
         }
         // Moving to next source row - reset accumulators
         memset(rowAccum, 0, outWidth * sizeof(uint32_t));
-        memset(rowCount, 0, outWidth * sizeof(uint16_t));
+        memset(rowCount, 0, outWidth * sizeof(uint32_t));
       }
     }
 

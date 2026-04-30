@@ -213,8 +213,7 @@ class AtkinsonDitherer {
   int16_t* errorRow2;
 };
 
-// Floyd-Steinberg error diffusion dithering with serpentine scanning
-// Serpentine scanning alternates direction each row to reduce "worm" artifacts
+// Floyd-Steinberg error diffusion dithering for callers that scan left-to-right.
 // Error distribution pattern (left-to-right):
 //       X   7/16
 // 3/16 5/16 1/16
@@ -291,28 +290,12 @@ class FloydSteinbergDitherer {
     // Calculate error
     int error = adjusted - quantizedValue;
 
-    // Distribute error to neighbors (serpentine: direction-aware)
-    if (!isReverseRow()) {
-      // Left to right: standard distribution
-      // Right: 7/16
-      errorCurRow[x + 2] += (error * 7) >> 4;
-      // Bottom-left: 3/16
-      errorNextRow[x] += (error * 3) >> 4;
-      // Bottom: 5/16
-      errorNextRow[x + 1] += (error * 5) >> 4;
-      // Bottom-right: 1/16
-      errorNextRow[x + 2] += (error) >> 4;
-    } else {
-      // Right to left: mirrored distribution
-      // Left: 7/16
-      errorCurRow[x] += (error * 7) >> 4;
-      // Bottom-right: 3/16
-      errorNextRow[x + 2] += (error * 3) >> 4;
-      // Bottom: 5/16
-      errorNextRow[x + 1] += (error * 5) >> 4;
-      // Bottom-left: 1/16
-      errorNextRow[x] += (error) >> 4;
-    }
+    // Standard left-to-right distribution. Mirrored diffusion would target an
+    // already-processed pixel because bitmap readers always pass increasing x.
+    errorCurRow[x + 2] += (error * 7) >> 4;
+    errorNextRow[x] += (error * 3) >> 4;
+    errorNextRow[x + 1] += (error * 5) >> 4;
+    errorNextRow[x + 2] += (error) >> 4;
 
     return quantized;
   }
@@ -329,9 +312,6 @@ class FloydSteinbergDitherer {
     memset(errorNextRow, 0, (width + 2) * sizeof(int16_t));
     rowCount++;
   }
-
-  // Check if current row should be processed in reverse
-  bool isReverseRow() const { return (rowCount & 1) != 0; }
 
   // Reset for a new image or MCU block
   void reset() {

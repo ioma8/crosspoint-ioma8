@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <new>
 
 struct ZipInflateCtx {
   InflateReader reader;
@@ -20,6 +22,7 @@ namespace {
 constexpr uint16_t ZIP_METHOD_STORED = 0;
 constexpr uint16_t ZIP_METHOD_DEFLATED = 8;
 constexpr uint32_t MAX_MEMORY_FILE_SIZE = 8U * 1024U * 1024U;
+constexpr size_t ZIP_ITEM_NAME_BUFFER_SIZE = 256;
 
 template <typename T>
 bool readExact(FsFile& file, T& value) {
@@ -59,7 +62,13 @@ bool ZipFile::loadAllFileStatSlims() {
   file.seek(zipDetails.centralDirOffset);
 
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return false;
+  }
   fileStatSlimCache.clear();
   fileStatSlimCache.reserve(zipDetails.totalEntries);
 
@@ -81,10 +90,10 @@ bool ZipFile::loadAllFileStatSlims() {
     file.seekCur(8);
     if (!readExact(file, fileStat.localHeaderOffset)) break;
 
-    if (nameLen < sizeof(itemName)) {
-      if (file.read(itemName, nameLen) != nameLen) break;
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
-      fileStatSlimCache.emplace(itemName, fileStat);
+      fileStatSlimCache.emplace(itemName.get(), fileStat);
     } else {
       // Skip over oversized entry names to avoid writing past fixed buffer.
       file.seekCur(nameLen);
@@ -134,7 +143,13 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   file.seek(startPos);
 
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return false;
+  }
 
   while (true) {
     uint32_t entryStart = file.position();
@@ -167,11 +182,11 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
     file.seekCur(8);
     if (!readExact(file, fileStat->localHeaderOffset)) break;
 
-    if (nameLen < 256) {
-      if (file.read(itemName, nameLen) != nameLen) break;
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
 
-      if (strcmp(itemName, filename) == 0) {
+      if (strcmp(itemName.get(), filename) == 0) {
         // Found it! Update cursor to next entry
         file.seekCur(m + k);
         lastCentralDirPos = file.position();
@@ -352,7 +367,13 @@ int ZipFile::fillUncompressedSizes(std::vector<SizeTarget>& targets, std::vector
   int matched = 0;
   const int targetCount = static_cast<int>(targets.size());
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return 0;
+  }
 
   while (file.available()) {
     if (!readExact(file, sig)) break;
@@ -373,11 +394,11 @@ int ZipFile::fillUncompressedSizes(std::vector<SizeTarget>& targets, std::vector
     uint32_t localHeaderOffset = 0;
     if (!readExact(file, localHeaderOffset)) break;
 
-    if (nameLen < 256) {
-      if (file.read(itemName, nameLen) != nameLen) break;
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
 
-      uint64_t hash = fnvHash64(itemName, nameLen);
+      uint64_t hash = fnvHash64(itemName.get(), nameLen);
       SizeTarget key = {hash, nameLen, 0};
 
       auto it = std::lower_bound(targets.begin(), targets.end(), key, [](const SizeTarget& a, const SizeTarget& b) {
@@ -569,7 +590,14 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
         return false;
       }
 
-      out.write(buffer, dataRead);
+      if (out.write(buffer, dataRead) != dataRead) {
+        LOG_ERR("ZIP", "Failed to write all stored bytes to stream");
+        free(buffer);
+        if (!wasOpen) {
+          close();
+        }
+        return false;
+      }
       remaining -= dataRead;
     }
 

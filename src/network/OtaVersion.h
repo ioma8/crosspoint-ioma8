@@ -16,6 +16,25 @@ struct Semver {
 
 inline bool hasRecognizedSuffix(const char* suffix) { return *suffix == '\0' || *suffix == '-' || *suffix == '+'; }
 
+inline bool isDateTag(const char* version) {
+  if (version == nullptr) {
+    return false;
+  }
+  if (*version == 'v') {
+    ++version;
+  }
+  // YYYY.MM.DD release tags use the semver parser shape but intentionally
+  // include a descriptive suffix for each release built on that date.
+  return std::strlen(version) >= 10 && std::isdigit(static_cast<unsigned char>(version[0])) &&
+         std::isdigit(static_cast<unsigned char>(version[1])) &&
+         std::isdigit(static_cast<unsigned char>(version[2])) &&
+         std::isdigit(static_cast<unsigned char>(version[3])) && version[4] == '.' &&
+         std::isdigit(static_cast<unsigned char>(version[5])) &&
+         std::isdigit(static_cast<unsigned char>(version[6])) && version[7] == '.' &&
+         std::isdigit(static_cast<unsigned char>(version[8])) &&
+         std::isdigit(static_cast<unsigned char>(version[9]));
+}
+
 inline bool parseSemverPrefix(const char* version, Semver& out) {
   if (version == nullptr) {
     return false;
@@ -73,6 +92,10 @@ inline bool isNewer(const std::string& latestVersion, const char* currentVersion
 
   if (std::strstr(currentVersion, "-rc") != nullptr) {
     return true;
+  }
+
+  if (isDateTag(latestVersion.c_str()) && isDateTag(currentVersion)) {
+    return latestVersion != currentVersion;
   }
 
   return false;

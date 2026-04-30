@@ -41,6 +41,13 @@ bool renderFromCache(GfxRenderer& renderer, const std::string& cachePath, int x,
     return false;
   }
 
+  if (cachedWidth == 0 || cachedHeight == 0 || cachedWidth > renderer.getScreenWidth() ||
+      cachedHeight > renderer.getScreenHeight()) {
+    LOG_ERR("IMG", "Invalid cache dimensions: %ux%u", cachedWidth, cachedHeight);
+    cacheFile.close();
+    return false;
+  }
+
   // Verify dimensions are close (allow 1 pixel tolerance for rounding differences)
   int widthDiff = abs(cachedWidth - expectedWidth);
   int heightDiff = abs(cachedHeight - expectedHeight);

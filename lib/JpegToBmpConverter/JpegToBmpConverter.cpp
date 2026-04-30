@@ -6,13 +6,22 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 #include "BitmapHelpers.h"
 
+namespace {
+
+constexpr size_t JPEG_READ_BUFFER_SIZE = 512;
+
+}  // namespace
+
 // Context structure for picojpeg callback
 struct JpegReadContext {
-  FsFile& file;
-  uint8_t buffer[512];
+  FsFile* file;
+  uint8_t* buffer;
+  size_t bufferSize;
   size_t bufferPos;
   size_t bufferFilled;
 };
@@ -177,7 +186,7 @@ unsigned char JpegToBmpConverter::jpegReadCallback(unsigned char* pBuf, const un
 
   // Check if we need to refill our context buffer
   if (context->bufferPos >= context->bufferFilled) {
-    context->bufferFilled = context->file.read(context->buffer, sizeof(context->buffer));
+  context->bufferFilled = context->file->read(context->buffer, context->bufferSize);
     context->bufferPos = 0;
 
     if (context->bufferFilled == 0) {
@@ -204,7 +213,18 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   LOG_DBG("JPG", "Converting JPEG to %s BMP (target: %dx%d)", oneBit ? "1-bit" : "2-bit", targetWidth, targetHeight);
 
   // Setup context for picojpeg callback
-  JpegReadContext context = {.file = jpegFile, .bufferPos = 0, .bufferFilled = 0};
+  std::unique_ptr<uint8_t[]> readBuffer(new (std::nothrow) uint8_t[JPEG_READ_BUFFER_SIZE]);
+  if (!readBuffer) {
+    LOG_ERR("JPG", "Failed to allocate JPEG read buffer");
+    return false;
+  }
+  JpegReadContext context = {
+      .file = &jpegFile,
+      .buffer = readBuffer.get(),
+      .bufferSize = JPEG_READ_BUFFER_SIZE,
+      .bufferPos = 0,
+      .bufferFilled = 0,
+  };
 
   // Initialize picojpeg decoder
   pjpeg_image_info_t imageInfo;
@@ -351,8 +371,12 @@ bool JpegToBmpConverter::jpegFileToBmpStreamInternal(FsFile& jpegFile, Print& bm
   uint32_t nextOutY_srcStart = 0;  // Source Y where next output row starts (16.16 fixed point)
 
   if (needsScaling) {
-    rowAccum = new uint32_t[outWidth]();
-    rowCount = new uint32_t[outWidth]();
+    rowAccum = new (std::nothrow) uint32_t[outWidth]();
+    rowCount = new (std::nothrow) uint32_t[outWidth]();
+    if (!rowAccum || !rowCount) {
+      LOG_ERR("JPG", "Failed to allocate scaling accumulators");
+      return false;
+    }
     nextOutY_srcStart = scaleY_fp;  // First boundary is at scaleY_fp (source Y for outY=1)
   }
 

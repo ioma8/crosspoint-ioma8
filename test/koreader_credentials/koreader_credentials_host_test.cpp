@@ -37,14 +37,14 @@ int main() {
   assert(decodeKOReaderCredentials(R"({"username":"bob","password":"legacy","serverUrl":"","matchMethod":0})", data,
                                    &needsResave));
   assert(data.username == "bob");
-  assert(data.password == "legacy");
+  assert(data.password.empty());
   assert(data.serverUrl.empty());
   assert(data.matchMethod == DocumentMatchMethod::FILENAME);
-  assert(needsResave);
+  assert(!needsResave);
 
   const std::string json = encodeKOReaderCredentials(data);
   assert(json.find("\"username\":\"bob\"") != std::string::npos);
-  assert(json.find("\"password_obf\":\"obf:legacy\"") != std::string::npos);
+  assert(json.find("\"password_obf\":\"obf:\"") != std::string::npos);
   assert(json.find("\"password\"") == std::string::npos);
 
   std::cout << "KOReader credential codec tests passed\n";

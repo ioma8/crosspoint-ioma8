@@ -47,7 +47,7 @@ struct SettingInfo {
   std::function<uint8_t()> valueGetter;
   std::function<void(uint8_t)> valueSetter;
   std::function<std::string()> stringGetter;
-  std::function<void(const std::string&)> stringSetter;
+  std::function<void(const char*)> stringSetter;
 
   SettingInfo& withObfuscated() {
     obfuscated = true;
@@ -124,9 +124,8 @@ struct SettingInfo {
     return s;
   }
 
-  static SettingInfo DynamicString(StrId nameId, std::function<std::string()> getter,
-                                   std::function<void(const std::string&)> setter, const char* key = nullptr,
-                                   StrId category = StrId::STR_NONE_OPT) {
+  static SettingInfo DynamicString(StrId nameId, std::function<std::string()> getter, std::function<void(const char*)> setter,
+                                   const char* key = nullptr, StrId category = StrId::STR_NONE_OPT) {
     SettingInfo s;
     s.nameId = nameId;
     s.type = SettingType::STRING;

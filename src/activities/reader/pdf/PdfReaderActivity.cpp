@@ -28,6 +28,7 @@
 namespace {
 // Cap stream buffer for embedded heap; corrupt PDFs can advertise huge lengths.
 constexpr size_t kMaxPdfImageStreamBytes = 2 * 1024 * 1024;
+constexpr uint32_t kMaxPdfImageSourcePixels = 3145728;
 }  // namespace
 
 void PdfReaderActivity::jumpToPage(uint32_t page) {
@@ -65,10 +66,14 @@ bool PdfReaderActivity::loadPage(uint32_t page) {
   if (!pdf) {
     return false;
   }
+  loadedPage = UINT32_MAX;
+  pageSliceStarts.clear();
+  wrappedTextCache_.clear();
   pageReader.close();
   if (!pageReader.open(pdf->cacheDirectory().c_str(), page)) {
     scratchPage_.clear();
     if (!pdf->getPage(page, scratchPage_)) {
+      scratchPage_.clear();
       return false;
     }
     scratchPage_.clear();
@@ -79,7 +84,6 @@ bool PdfReaderActivity::loadPage(uint32_t page) {
   loadedPage = page;
   navigationState.page = page;
   navigationState.slice = 0;
-  wrappedTextCache_.clear();
   rebuildPageSlices();
   return !pageSliceStarts.empty();
 }
@@ -90,6 +94,10 @@ void PdfReaderActivity::drawPdfImagePlaceholder(int y) const {
 
 bool PdfReaderActivity::renderPdfImage(const PdfImageDescriptor& img, int y, int bottomLimit) {
   if (!pdf || img.pdfStreamLength == 0 || img.pdfStreamLength > kMaxPdfImageStreamBytes) {
+    return false;
+  }
+  if (img.width == 0 || img.height == 0 ||
+      static_cast<uint32_t>(img.width) * static_cast<uint32_t>(img.height) > kMaxPdfImageSourcePixels) {
     return false;
   }
 

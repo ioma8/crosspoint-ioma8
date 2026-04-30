@@ -6,6 +6,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -374,7 +376,7 @@ bool readClassicXrefMeta(FsFile& file, size_t fileSize, uint32_t xrefOff, Classi
     const unsigned long firstObj = strtoul(lineBuf, &endp, 10);
     skipWs(endp);
     const unsigned long count = strtoul(endp, &endp, 10);
-    if (count > 100000 || firstObj + count > 2000000) {
+    if (count > 100000 || firstObj > 2000000 || count > 2000000 - firstObj) {
       pdfLogErr("xref: bad subsection");
       return false;
     }
@@ -417,7 +419,7 @@ bool applyClassicXrefSection(FsFile& file, size_t fileSize, uint32_t xrefOff, Xr
     const unsigned long firstObj = strtoul(lineBuf, &endp, 10);
     skipWs(endp);
     const unsigned long count = strtoul(endp, &endp, 10);
-    if (count > 100000 || firstObj + count > 2000000) {
+    if (count > 100000 || firstObj > 2000000 || count > 2000000 - firstObj) {
       pdfLogErr("xref: bad subsection");
       return false;
     }
@@ -579,15 +581,19 @@ bool takeXrefStreamChunk(void* ctx, const uint8_t* data, size_t len) {
 }  // namespace
 
 bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xrefObjOffset) {
-  PdfFixedString<PDF_OBJECT_BODY_MAX> dict;
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> dict(new (std::nothrow) PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  if (!dict) {
+    LOG_ERR("PDF", "xref: failed to allocate xref stream dict");
+    return false;
+  }
   uint32_t so = 0;
   uint32_t sl = 0;
-  if (!PdfObject::readAt(file, xrefObjOffset, dict, &so, &sl, nullptr)) {
+  if (!PdfObject::readAt(file, xrefObjOffset, *dict, &so, &sl, nullptr)) {
     LOG_ERR("PDF", "xref: cannot read xref stream object");
     return false;
   }
   PdfFixedString<PDF_DICT_VALUE_MAX> t;
-  if (!PdfObject::getDictValue("/Type", dict.view(), t)) {
+  if (!PdfObject::getDictValue("/Type", dict->view(), t)) {
     LOG_ERR("PDF", "xref: missing /Type");
     return false;
   }
@@ -599,8 +605,8 @@ bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xref
     return false;
   }
 
-  rootObjId_ = PdfObject::getDictRef("/Root", dict.view());
-  const int size = PdfObject::getDictInt("/Size", dict.view(), 0);
+  rootObjId_ = PdfObject::getDictRef("/Root", dict->view());
+  const int size = PdfObject::getDictInt("/Size", dict->view(), 0);
   if (size <= 0 || size > static_cast<int>(PDF_MAX_OBJECTS)) {
     LOG_ERR("PDF", "xref: bad /Size in xref stream");
     return false;
@@ -608,7 +614,7 @@ bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xref
 
   PdfFixedVector<int, 32> wv;
   PdfFixedString<PDF_DICT_VALUE_MAX> wStr;
-  if (!PdfObject::getDictValue("/W", dict.view(), wStr) || !parseBracketInts(wStr.view(), wv) || wv.size() < 3 ||
+  if (!PdfObject::getDictValue("/W", dict->view(), wStr) || !parseBracketInts(wStr.view(), wv) || wv.size() < 3 ||
       wv[0] < 0 || wv[1] < 0 || wv[2] < 0) {
     LOG_ERR("PDF", "xref: bad /W in xref stream");
     return false;
@@ -625,7 +631,7 @@ bool XrefTable::parseXrefStream(FsFile& file, size_t /*fileSize*/, uint32_t xref
   PdfFixedString<PDF_DICT_VALUE_MAX> idxStr;
   PdfFixedVector<int, 32> idxv;
   bool hasIndex = false;
-  if (PdfObject::getDictValue("/Index", dict.view(), idxStr) && !idxStr.empty() &&
+  if (PdfObject::getDictValue("/Index", dict->view(), idxStr) && !idxStr.empty() &&
       parseBracketInts(idxStr.view(), idxv) && idxv.size() >= 2) {
     hasIndex = true;
     if ((idxv.size() & 1) != 0) {
@@ -733,14 +739,17 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
   if (off == 0) {
     return false;
   }
-  PdfFixedString<PDF_OBJECT_BODY_MAX> dict;
+  std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> dict(new (std::nothrow) PdfFixedString<PDF_OBJECT_BODY_MAX>());
+  if (!dict) {
+    return false;
+  }
   uint32_t so = 0;
   uint32_t sl = 0;
-  if (!PdfObject::readAt(file, off, dict, &so, &sl, this)) {
+  if (!PdfObject::readAt(file, off, *dict, &so, &sl, this)) {
     return false;
   }
   PdfFixedString<PDF_DICT_VALUE_MAX> st;
-  if (!PdfObject::getDictValue("/Type", dict.view(), st)) {
+  if (!PdfObject::getDictValue("/Type", dict->view(), st)) {
     return false;
   }
   while (st.size() > 0 && (st[0] == ' ' || st[0] == '\t' || st[0] == '\r' || st[0] == '\n')) {
@@ -749,44 +758,64 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
   if (st.view() != "/ObjStm") {
     return false;
   }
-  const int nObj = PdfObject::getDictInt("/N", dict.view(), 0);
-  const int first = PdfObject::getDictInt("/First", dict.view(), 0);
+  const int nObj = PdfObject::getDictInt("/N", dict->view(), 0);
+  const int first = PdfObject::getDictInt("/First", dict->view(), 0);
   if (nObj <= 0 || nObj > 4096 || first < 0) {
     return false;
   }
 
 #ifndef HAL_STORAGE_STUB
   auto& storage = Storage;
-  if (!storage.ensureDirectoryExists("/.crosspoint/pdf")) {
-    return false;
-  }
   constexpr size_t kTempPrefixLen = sizeof("/.crosspoint/pdf/objstm_") - 1;
   PdfFixedString<96> tempPath;
   if (!tempPath.assign("/.crosspoint/pdf/objstm_", kTempPrefixLen) || !appendUnsigned(tempPath, stmObjId) ||
       !tempPath.append(".tmp", 4)) {
     return false;
   }
+  auto removeCurrentTemp = [&]() {
+    if (cachedObjStreamTempPath_.view() == tempPath.view()) {
+      removeCachedObjStreamTemp();
+    } else {
+      storage.remove(tempPath.c_str());
+    }
+  };
   FsFile spill;
-  if (!storage.openFileForWrite("PDF", tempPath.c_str(), spill)) {
-    return false;
-  }
-  StreamToFileCtx ctx{&spill};
-  const bool decoded = StreamDecoder::flateDecodeChunks(file, so, sl, writeChunkToFile, &ctx);
-  spill.flush();
-  spill.close();
-  if (!decoded) {
-    storage.remove(tempPath.c_str());
-    return false;
-  }
-  if (!storage.openFileForRead("PDF", tempPath.c_str(), spill)) {
-    storage.remove(tempPath.c_str());
-    return false;
+  const bool reuseTemp = cachedObjStreamTempId_ == stmObjId && cachedObjStreamTempPath_.view() == tempPath.view() &&
+                         storage.openFileForRead("PDF", tempPath.c_str(), spill);
+  if (!reuseTemp) {
+    if (spill.isOpen()) {
+      spill.close();
+    }
+    removeCachedObjStreamTemp();
+    if (!objStreamTempDirReady_) {
+      if (!storage.ensureDirectoryExists("/.crosspoint/pdf")) {
+        return false;
+      }
+      objStreamTempDirReady_ = true;
+    }
+    if (!storage.openFileForWrite("PDF", tempPath.c_str(), spill)) {
+      return false;
+    }
+    StreamToFileCtx ctx{&spill};
+    const bool decoded = StreamDecoder::flateDecodeChunks(file, so, sl, writeChunkToFile, &ctx);
+    spill.flush();
+    spill.close();
+    if (!decoded) {
+      removeCurrentTemp();
+      return false;
+    }
+    cachedObjStreamTempId_ = stmObjId;
+    cachedObjStreamTempPath_ = tempPath;
+    if (!storage.openFileForRead("PDF", tempPath.c_str(), spill)) {
+      removeCachedObjStreamTemp();
+      return false;
+    }
   }
 
   const size_t spillSize = spill.fileSize();
   if (static_cast<size_t>(first) > spillSize) {
     spill.close();
-    storage.remove(tempPath.c_str());
+    removeCurrentTemp();
     return false;
   }
 
@@ -804,7 +833,10 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
       }
     }
     const size_t len = end - start;
-    PdfFixedString<PDF_OBJECT_BODY_MAX> slice;
+    std::unique_ptr<PdfFixedString<PDF_OBJECT_BODY_MAX>> slice(new (std::nothrow) PdfFixedString<PDF_OBJECT_BODY_MAX>());
+    if (!slice) {
+      return false;
+    }
     if (len >= PDF_OBJECT_BODY_MAX || !spill.seek(start)) {
       return false;
     }
@@ -814,26 +846,29 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
     while (left > 0) {
       const size_t want = std::min(left, kChunk);
       const int rd = spill.read(reinterpret_cast<uint8_t*>(buf), want);
-      if (rd <= 0 || !slice.append(buf, static_cast<size_t>(rd))) {
+      if (rd <= 0 || !slice->append(buf, static_cast<size_t>(rd))) {
         return false;
       }
       left -= static_cast<size_t>(rd);
     }
-    const std::string_view trimmed = trimObjStmSlice(slice.view());
+    const std::string_view trimmed = trimObjStmSlice(slice->view());
     if (trimmed.empty()) {
       return false;
     }
-    PdfFixedString<PDF_INLINE_DICT_MAX> d;
-    PdfByteBuffer stm;
-    if (!splitObjStmObjectSlice(trimmed, d, stm)) {
+    std::unique_ptr<PdfFixedString<PDF_INLINE_DICT_MAX>> d(new (std::nothrow) PdfFixedString<PDF_INLINE_DICT_MAX>());
+    std::unique_ptr<PdfByteBuffer> stm(new (std::nothrow) PdfByteBuffer());
+    if (!d || !stm) {
       return false;
     }
-    return insertInlineObject(objId, d, stm.ptr(), stm.len);
+    if (!splitObjStmObjectSlice(trimmed, *d, *stm)) {
+      return false;
+    }
+    return insertInlineObject(objId, *d, stm->ptr(), stm->len);
   };
 
   if (!spill.seek(0)) {
     spill.close();
-    storage.remove(tempPath.c_str());
+    removeCurrentTemp();
     return false;
   }
   bool havePrev = false;
@@ -851,7 +886,7 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
     if (!readObjStmUnsignedToken(spill, static_cast<size_t>(first), objId) ||
         !readObjStmUnsignedToken(spill, static_cast<size_t>(first), rel)) {
       spill.close();
-      storage.remove(tempPath.c_str());
+      removeCurrentTemp();
       return false;
     }
     if (havePrev) {
@@ -885,7 +920,6 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
 
   const bool insertedTarget = targetFound && cacheSliceFromFile(targetObjId, targetRel, targetNextRel);
   spill.close();
-  storage.remove(tempPath.c_str());
   return insertedTarget;
 #else
   ObjStmDecodeAccum stream{};
@@ -971,6 +1005,18 @@ bool XrefTable::loadObjStreamForTarget(FsFile& file, uint32_t stmObjId, uint32_t
 #endif
 }
 
+XrefTable::~XrefTable() { removeCachedObjStreamTemp(); }
+
+void XrefTable::removeCachedObjStreamTemp() {
+#ifndef HAL_STORAGE_STUB
+  if (!cachedObjStreamTempPath_.empty()) {
+    Storage.remove(cachedObjStreamTempPath_.c_str());
+  }
+#endif
+  cachedObjStreamTempPath_.clear();
+  cachedObjStreamTempId_ = 0;
+}
+
 bool XrefTable::setOffset(uint32_t objId, uint32_t off) {
   if (objId >= PDF_MAX_OBJECTS) {
     pdfLogErr("xref: object id overflow");
@@ -989,10 +1035,12 @@ bool XrefTable::resetToCached(uint32_t rootObjId, uint32_t objectCount) {
   if (objectCount > PDF_MAX_OBJECTS) {
     return false;
   }
+  removeCachedObjStreamTemp();
   std::memset(offsets_, 0, sizeof(offsets_));
   offsetCount_ = objectCount;
   rootObjId_ = rootObjId;
   inlineVictim_ = 0;
+  objStreamTempDirReady_ = false;
   for (auto& e : inline_) {
     e = InlineEntry{};
   }
@@ -1079,10 +1127,12 @@ const XrefTable::InlineEntry* XrefTable::findInline(uint32_t objId) const {
 }
 
 bool XrefTable::parse(FsFile& file) {
+  removeCachedObjStreamTemp();
   std::memset(offsets_, 0, sizeof(offsets_));
   offsetCount_ = 0;
   rootObjId_ = 0;
   inlineVictim_ = 0;
+  objStreamTempDirReady_ = false;
   for (auto& e : inline_) {
     e = InlineEntry{};
   }
@@ -1097,19 +1147,23 @@ bool XrefTable::parse(FsFile& file) {
 
   const size_t tailSize = std::min<size_t>(1024, fileSize);
   const size_t tailStart = fileSize - tailSize;
-  uint8_t tailBuf[1024];
-  if (!file.seek(tailStart) || file.read(tailBuf, tailSize) != static_cast<int>(tailSize)) {
+  std::unique_ptr<uint8_t[]> tailBuf(new (std::nothrow) uint8_t[1024]);
+  if (!tailBuf) {
+    pdfLogErr("xref: tail allocation failed");
+    return false;
+  }
+  if (!file.seek(tailStart) || file.read(tailBuf.get(), tailSize) != static_cast<int>(tailSize)) {
     pdfLogErr("xref: read tail failed");
     return false;
   }
 
-  const size_t sx = findStartXref(tailBuf, tailSize);
+  const size_t sx = findStartXref(tailBuf.get(), tailSize);
   if (sx == SIZE_MAX) {
     pdfLogErr("xref: startxref not found");
     return false;
   }
 
-  const char* p = reinterpret_cast<const char*>(tailBuf + sx + 9);
+  const char* p = reinterpret_cast<const char*>(tailBuf.get() + sx + 9);
   skipWs(p);
   char numBuf[32];
   size_t nb = 0;
@@ -1175,20 +1229,6 @@ bool XrefTable::readDictForObject(FsFile& file, uint32_t objId, PdfFixedString<P
     const uint32_t mappedStreamId = objId < PDF_MAX_OBJECTS ? static_cast<uint32_t>(objStreamIdByObjectId_[objId]) : 0;
     if (mappedStreamId != 0) {
       if (const_cast<XrefTable*>(this)->loadObjStreamForTarget(file, mappedStreamId, objId)) {
-        const InlineEntry* loaded = findInline(objId);
-        if (loaded) {
-          return dictBody.assign(loaded->dict, loaded->dictLen);
-        }
-      }
-    }
-    for (uint32_t sid = 0; sid < PDF_MAX_OBJECTS; ++sid) {
-      if ((objStmContainers_[sid >> 3U] & static_cast<uint8_t>(1U << (sid & 7U))) == 0U) {
-        continue;
-      }
-      if (sid == mappedStreamId) {
-        continue;
-      }
-      if (const_cast<XrefTable*>(this)->loadObjStreamForTarget(file, sid, objId)) {
         const InlineEntry* loaded = findInline(objId);
         if (loaded) {
           return dictBody.assign(loaded->dict, loaded->dictLen);

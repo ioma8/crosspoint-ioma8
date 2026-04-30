@@ -6,9 +6,14 @@
 #include <Logging.h>
 #include <esp_task_wdt.h>
 
+#include <memory>
+#include <new>
+
 namespace {
 const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS[0]);
+constexpr size_t DAV_FILE_NAME_BUFFER_SIZE = 500;
+constexpr size_t DAV_COPY_BUFFER_SIZE = 256;
 #ifndef CROSSPOINT_WEB_AUTH_USER
 #define CROSSPOINT_WEB_AUTH_USER "crosspoint"
 #endif
@@ -20,6 +25,16 @@ constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS
 // ESP32 doesn't have real-time clock set by default, so we use a fixed epoch date
 // as a fallback. The date is not critical for WebDAV Class 1 operations.
 const char* FIXED_DATE = "Thu, 01 Jan 2024 00:00:00 GMT";
+constexpr size_t MAX_FAT_PATH_LEN = 255;
+constexpr char DAV_TMP_SUFFIX[] = ".davtmp";
+
+bool makeDavTempPath(const String& path, String& tempPath) {
+  if (path.length() + strlen(DAV_TMP_SUFFIX) > MAX_FAT_PATH_LEN) {
+    return false;
+  }
+  tempPath = path + DAV_TMP_SUFFIX;
+  return true;
+}
 
 bool requireWebAuth(WebServer& server) {
   if (server.authenticate(CROSSPOINT_WEB_AUTH_USER, CROSSPOINT_WEB_AUTH_PASSWORD)) {
@@ -91,7 +106,11 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     }
 
     // Write to a temp file to avoid destroying the original on failed upload
-    String tempPath = _putPath + ".davtmp";
+    String tempPath;
+    if (!makeDavTempPath(_putPath, tempPath)) {
+      _putOk = false;
+      return;
+    }
     Storage.remove(tempPath.c_str());
     _putOk = Storage.openFileForWrite("DAV", tempPath, _putFile);
     LOG_DBG("DAV", "PUT START: %s", _putPath.c_str());
@@ -108,7 +127,11 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
   } else if (raw.status == RAW_END) {
     if (_putFile) _putFile.close();
     if (_putOk) {
-      String tempPath = _putPath + ".davtmp";
+      String tempPath;
+      if (!makeDavTempPath(_putPath, tempPath)) {
+        _putOk = false;
+        return;
+      }
       if (_putExisted) Storage.remove(_putPath.c_str());
       FsFile tmp = Storage.open(tempPath.c_str());
       if (tmp) {
@@ -123,8 +146,10 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
   } else if (raw.status == RAW_ABORTED) {
     if (_putFile) _putFile.close();
-    String tempPath = _putPath + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    String tempPath;
+    if (makeDavTempPath(_putPath, tempPath)) {
+      Storage.remove(tempPath.c_str());
+    }
     _putOk = false;
   }
 }
@@ -238,11 +263,18 @@ void WebDAVHandler::handlePropfind(WebServer& s) {
 
   // If depth > 0 and it's a directory, list children
   if (depth > 0) {
+    std::unique_ptr<char[]> name(new (std::nothrow) char[DAV_FILE_NAME_BUFFER_SIZE]);
+    if (!name) {
+      root.close();
+      s.sendContent("</D:multistatus>\n");
+      s.sendContent("");
+      LOG_ERR("DAV", "Failed to allocate PROPFIND name buffer");
+      return;
+    }
     FsFile file = root.openNextFile();
-    char name[500];
     while (file) {
-      file.getName(name, sizeof(name));
-      String fileName(name);
+      file.getName(name.get(), DAV_FILE_NAME_BUFFER_SIZE);
+      String fileName(name.get());
 
       // Skip hidden/protected items
       bool shouldHide = fileName.startsWith(".");
@@ -396,8 +428,10 @@ void WebDAVHandler::handlePut(WebServer& s) {
   }
 
   if (!_putOk) {
-    String tempPath = path + ".davtmp";
-    Storage.remove(tempPath.c_str());
+    String tempPath;
+    if (makeDavTempPath(path, tempPath)) {
+      Storage.remove(tempPath.c_str());
+    }
     s.send(500, "text/plain", "Write failed - incomplete upload or disk full");
     return;
   }
@@ -641,14 +675,20 @@ void WebDAVHandler::handleCopy(WebServer& s) {
     return;
   }
 
-  // Streaming copy with 4KB buffer on stack
-  uint8_t buf[256];
+  std::unique_ptr<uint8_t[]> buf(new (std::nothrow) uint8_t[DAV_COPY_BUFFER_SIZE]);
+  if (!buf) {
+    srcFile.close();
+    dstFile.close();
+    Storage.remove(dstPath.c_str());
+    s.send(500, "text/plain", "Failed to allocate copy buffer");
+    return;
+  }
   bool copyOk = true;
   while (srcFile.available()) {
     esp_task_wdt_reset();
-    int bytesRead = srcFile.read(buf, sizeof(buf));
+    int bytesRead = srcFile.read(buf.get(), DAV_COPY_BUFFER_SIZE);
     if (bytesRead <= 0) break;
-    size_t written = dstFile.write(buf, bytesRead);
+    size_t written = dstFile.write(buf.get(), bytesRead);
     if (written != (size_t)bytesRead) {
       copyOk = false;
       break;

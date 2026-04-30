@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <memory>
+#include <new>
 
 FontDecompressor::~FontDecompressor() { deinit(); }
 
@@ -250,12 +252,25 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
   }
   PageSlot& slot = pageSlots[pageSlotCount];
 
+  struct PrewarmScratch {
+    uint32_t neededGlyphs[MAX_PAGE_GLYPHS];
+    uint16_t neededGroups[128];
+    bool visitedGroup[128];
+    uint32_t groupAlignedTracker[128];
+  };
+
+  std::unique_ptr<PrewarmScratch> scratch(new (std::nothrow) PrewarmScratch());
+  if (!scratch) {
+    LOG_ERR("FDC", "Failed to allocate prewarm scratch");
+    return -1;
+  }
+
   // Step 1: Collect glyph indices needed for this page, then deduplicate via sort+unique.
   // Collecting with duplicates first avoids the O(n²) linear scan per codepoint; instead we
   // do one O(n log n) sort at the end.  The array is capped at MAX_PAGE_GLYPHS entries —
   // once full we simply stop collecting (same behaviour as before: excess glyphs fall back to
   // the hot-group path).
-  uint32_t neededGlyphs[MAX_PAGE_GLYPHS];
+  uint32_t* neededGlyphs = scratch->neededGlyphs;
   uint16_t rawCount = 0;
   bool glyphCapWarned = false;
 
@@ -283,14 +298,12 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
   if (glyphCount == 0) return 0;
 
   // Step 2: Compute total buffer size and collect unique groups.
-  // Use a 128-byte stack-allocated visited array for O(1) group deduplication instead of
-  // the O(n²) linear scan.  groupCount is capped at 128 (uint8_t), so visitedGroup fits
-  // exactly in 128 bytes — well within the ESP32-C3 stack safety budget.
+  // Use a small visited array for O(1) group deduplication instead of the O(n²) linear scan.
   uint32_t totalBytes = 0;
-  uint16_t neededGroups[128];
+  uint16_t* neededGroups = scratch->neededGroups;
+  bool* visitedGroup = scratch->visitedGroup;
   uint8_t groupCount = 0;
   bool groupCapWarned = false;
-  bool visitedGroup[128] = {};  // zero-initialised; 128 bytes on stack
 
   for (uint16_t i = 0; i < glyphCount; i++) {
     totalBytes += fontData->glyph[neededGlyphs[i]].dataLength;
@@ -360,7 +373,7 @@ int FontDecompressor::prewarmCache(const EpdFontData* fontData, const char* utf8
 
   // Step 3b: Pre-scan to compute each needed glyph's byte-aligned offset within its group.
   // This avoids recomputing aligned offsets per group during extraction in step 4.
-  uint32_t groupAlignedTracker[128] = {};  // running byte-aligned offset for each needed group
+  uint32_t* groupAlignedTracker = scratch->groupAlignedTracker;
 
   if (fontData->glyphToGroup) {
     // Frequency-grouped: single O(totalGlyphs) pass through glyphToGroup

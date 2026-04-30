@@ -60,6 +60,9 @@ void KOReaderSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (kb.text == KOREADER_STORE.getUsername()) {
+                                 return;
+                               }
                                KOREADER_STORE.setCredentials(kb.text, KOREADER_STORE.getPassword());
                                KOREADER_STORE.saveToFile();
                              }
@@ -73,6 +76,9 @@ void KOReaderSettingsActivity::handleSelection() {
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& kb = std::get<KeyboardResult>(result.data);
+                               if (kb.text == KOREADER_STORE.getPassword()) {
+                                 return;
+                               }
                                KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), kb.text);
                                KOREADER_STORE.saveToFile();
                              }
@@ -89,6 +95,9 @@ void KOReaderSettingsActivity::handleSelection() {
           if (!result.isCancelled) {
             const auto& kb = std::get<KeyboardResult>(result.data);
             const std::string urlToSave = (kb.text == "https://" || kb.text == "http://") ? "" : kb.text;
+            if (urlToSave == KOREADER_STORE.getServerUrl()) {
+              return;
+            }
             KOREADER_STORE.setServerUrl(urlToSave);
             KOREADER_STORE.saveToFile();
           }

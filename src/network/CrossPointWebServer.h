@@ -84,7 +84,8 @@ class CrossPointWebServer {
   void abortWsUpload(const char* tag);
 
   // File scanning
-  void scanFiles(const char* path, const std::function<void(FileInfo)>& callback) const;
+  using FileScanCallback = void (*)(const FileInfo& info, void* context);
+  void scanFiles(const char* path, FileScanCallback callback, void* context) const;
   String formatFileSize(size_t bytes) const;
   bool isEpubFile(const String& filename) const;
 
