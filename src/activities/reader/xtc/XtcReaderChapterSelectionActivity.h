@@ -7,7 +7,7 @@
 #include "util/ButtonNavigator.h"
 
 class XtcReaderChapterSelectionActivity final : public Activity {
-  std::shared_ptr<Xtc> xtc;
+  Xtc* xtc;
   ButtonNavigator buttonNavigator;
   uint32_t currentPage = 0;
   int selectorIndex = 0;
@@ -17,7 +17,7 @@ class XtcReaderChapterSelectionActivity final : public Activity {
 
  public:
   explicit XtcReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                             const std::shared_ptr<Xtc>& xtc, uint32_t currentPage)
+                                             Xtc* xtc, uint32_t currentPage)
       : Activity("XtcReaderChapterSelection", renderer, mappedInput), xtc(xtc), currentPage(currentPage) {}
   void onEnter() override;
   void onExit() override;

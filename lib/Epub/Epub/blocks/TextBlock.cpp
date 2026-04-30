@@ -4,6 +4,10 @@
 #include <Logging.h>
 #include <Serialization.h>
 
+namespace {
+constexpr uint32_t MAX_CACHE_WORD_LEN = 256;
+}
+
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   // Validate iterator bounds before rendering
   if (words.size() != wordXpos.size() || words.size() != wordStyles.size()) {
@@ -91,7 +95,12 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   words.resize(wc);
   wordXpos.resize(wc);
   wordStyles.resize(wc);
-  for (auto& w : words) serialization::readString(file, w);
+  for (auto& w : words) {
+    if (!serialization::readString(file, w, MAX_CACHE_WORD_LEN)) {
+      LOG_ERR("TXB", "Deserialization failed: invalid cached word length");
+      return nullptr;
+    }
+  }
   for (auto& x : wordXpos) serialization::readPod(file, x);
   for (auto& s : wordStyles) serialization::readPod(file, s);
 

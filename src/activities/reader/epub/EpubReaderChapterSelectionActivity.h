@@ -7,7 +7,7 @@
 #include "util/ButtonNavigator.h"
 
 class EpubReaderChapterSelectionActivity final : public Activity {
-  std::shared_ptr<Epub> epub;
+  Epub* epub;
   std::string epubPath;
   ButtonNavigator buttonNavigator;
   int currentSpineIndex = 0;
@@ -22,7 +22,7 @@ class EpubReaderChapterSelectionActivity final : public Activity {
 
  public:
   explicit EpubReaderChapterSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                              const std::shared_ptr<Epub>& epub, const std::string& epubPath,
+                                              Epub* epub, const std::string& epubPath,
                                               const int currentSpineIndex)
       : Activity("EpubReaderChapterSelection", renderer, mappedInput),
         epub(epub),

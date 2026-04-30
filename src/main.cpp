@@ -124,6 +124,75 @@ EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
+namespace {
+constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 32;
+
+bool commandEquals(const char* cmd, const char* expected) {
+  while (*cmd == ' ' || *cmd == '\t') {
+    cmd++;
+  }
+
+  size_t len = strlen(cmd);
+  while (len > 0 && (cmd[len - 1] == ' ' || cmd[len - 1] == '\t')) {
+    len--;
+  }
+
+  return strlen(expected) == len && strncmp(cmd, expected, len) == 0;
+}
+
+void handleSerialCommand(const char* line) {
+  if (strncmp(line, "CMD:", 4) != 0) {
+    return;
+  }
+
+  const char* cmd = line + 4;
+  if (commandEquals(cmd, "SCREENSHOT")) {
+    logSerial.printf("SCREENSHOT_START:%d\n", HalDisplay::BUFFER_SIZE);
+    uint8_t* buf = display.getFrameBuffer();
+    logSerial.write(buf, HalDisplay::BUFFER_SIZE);
+    logSerial.printf("SCREENSHOT_END\n");
+  }
+}
+
+void processSerialCommands() {
+  static char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
+  static size_t serialCommandLength = 0;
+  static bool droppingSerialCommand = false;
+
+  while (logSerial.available() > 0) {
+    const int value = logSerial.read();
+    if (value < 0) {
+      break;
+    }
+
+    const char ch = static_cast<char>(value);
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      if (!droppingSerialCommand) {
+        serialCommandBuffer[serialCommandLength] = '\0';
+        handleSerialCommand(serialCommandBuffer);
+      }
+      serialCommandLength = 0;
+      droppingSerialCommand = false;
+      continue;
+    }
+    if (droppingSerialCommand) {
+      continue;
+    }
+    if (serialCommandLength >= SERIAL_COMMAND_BUFFER_SIZE - 1) {
+      LOG_ERR("MAIN", "Serial command too long; dropping line");
+      serialCommandLength = 0;
+      droppingSerialCommand = true;
+      continue;
+    }
+
+    serialCommandBuffer[serialCommandLength++] = ch;
+  }
+}
+}  // namespace
+
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
 unsigned long t2 = 0;
@@ -328,19 +397,7 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
-    String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
-      String cmd = line.substring(4);
-      cmd.trim();
-      if (cmd == "SCREENSHOT") {
-        logSerial.printf("SCREENSHOT_START:%d\n", HalDisplay::BUFFER_SIZE);
-        uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, HalDisplay::BUFFER_SIZE);
-        logSerial.printf("SCREENSHOT_END\n");
-      }
-    }
-  }
+  processSerialCommands();
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();

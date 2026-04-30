@@ -262,16 +262,39 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
 }
 
 std::unique_ptr<Page> Section::loadPageFromSectionFile() {
+  if (currentPage < 0 || currentPage >= pageCount) {
+    LOG_ERR("SCT", "Invalid page %d for section with %u pages", currentPage, pageCount);
+    return nullptr;
+  }
+
   if (!Storage.openFileForRead("SCT", filePath, file)) {
     return nullptr;
   }
 
+  const uint32_t fileSize = file.size();
+  if (fileSize < HEADER_SIZE + sizeof(uint32_t)) {
+    LOG_ERR("SCT", "Section cache too small: %lu bytes", fileSize);
+    file.close();
+    return nullptr;
+  }
   file.seek(HEADER_SIZE - sizeof(uint32_t) * 2);
   uint32_t lutOffset;
   serialization::readPod(file, lutOffset);
-  file.seek(lutOffset + sizeof(uint32_t) * currentPage);
+  const uint32_t lutEntryOffset = lutOffset + sizeof(uint32_t) * static_cast<uint32_t>(currentPage);
+  if (lutOffset < HEADER_SIZE || lutEntryOffset > fileSize - sizeof(uint32_t)) {
+    LOG_ERR("SCT", "Invalid LUT offset %lu for page %d", lutOffset, currentPage);
+    file.close();
+    return nullptr;
+  }
+
+  file.seek(lutEntryOffset);
   uint32_t pagePos;
   serialization::readPod(file, pagePos);
+  if (pagePos < HEADER_SIZE || pagePos >= fileSize) {
+    LOG_ERR("SCT", "Invalid page offset %lu for page %d", pagePos, currentPage);
+    file.close();
+    return nullptr;
+  }
   file.seek(pagePos);
 
   auto page = Page::deserialize(file);

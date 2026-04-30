@@ -38,11 +38,6 @@ constexpr uint32_t MIN_HEAP_FOR_PREWARM = 36000;
 constexpr uint8_t PREWARM_COOLDOWN_PAGES = 3;
 constexpr uint32_t THUMB_TASK_STACK_SIZE = 12288;
 
-struct EpubThumbTaskContext {
-  std::shared_ptr<Epub> epub;
-  int coverHeight;
-};
-
 void generateEpubThumbTask(void* param) {
   std::unique_ptr<EpubThumbTaskContext> ctx(static_cast<EpubThumbTaskContext*>(param));
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -55,6 +50,12 @@ void generateEpubThumbTask(void* param) {
     }
   }
 
+  if (ctx->taskHandle) {
+    *ctx->taskHandle = nullptr;
+  }
+  if (ctx->contextSlot) {
+    *ctx->contextSlot = nullptr;
+  }
   vTaskDelete(nullptr);
 }
 
@@ -127,6 +128,7 @@ void EpubReaderActivity::onExit() {
   lastSavedSpineIndex = -1;
   lastSavedPage = -1;
   bookmarks.clear();
+  cancelHomeThumbGeneration();
   section.reset();
   epub.reset();
   thumbGenerationPending = false;
@@ -316,7 +318,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       const int spineIdx = currentSpineIndex;
       const std::string path = epub->getPath();
       startActivityForResult(
-          std::make_unique<EpubReaderChapterSelectionActivity>(renderer, mappedInput, epub, path, spineIdx),
+          std::make_unique<EpubReaderChapterSelectionActivity>(renderer, mappedInput, epub.get(), path, spineIdx),
           [this](const ActivityResult& result) {
             if (!result.isCancelled && currentSpineIndex != std::get<ChapterResult>(result.data).spineIndex) {
               RenderLock lock(*this);
@@ -419,7 +421,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         const int currentPage = section ? section->currentPage : 0;
         const int totalPages = section ? section->pageCount : 0;
         startActivityForResult(
-            std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub, epub->getPath(), currentSpineIndex,
+            std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub.get(), epub->getPath(), currentSpineIndex,
                                                    currentPage, totalPages),
             [this](const ActivityResult& result) {
               if (!result.isCancelled) {
@@ -663,7 +665,7 @@ void EpubReaderActivity::render(RenderLock&& lock) {
   if (!section) {
     const auto filepath = epub->getSpineItem(currentSpineIndex).href;
     LOG_DBG("ERS", "Loading file: %s, index: %d", filepath.c_str(), currentSpineIndex);
-    section = std::unique_ptr<Section>(new Section(epub, currentSpineIndex, renderer));
+    section = std::unique_ptr<Section>(new Section(epub.get(), currentSpineIndex, renderer));
 
     if (!section->loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
@@ -805,17 +807,29 @@ void EpubReaderActivity::maybeScheduleHomeThumbGeneration() {
     return;
   }
 
-  auto* ctx = new (std::nothrow) EpubThumbTaskContext{epub, coverHeight};
+  auto* ctx = new (std::nothrow) EpubThumbTaskContext{epub.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
   if (!ctx) {
     LOG_ERR("ERS", "Failed to allocate thumb task context");
     return;
   }
 
-  TaskHandle_t task = nullptr;
-  if (xTaskCreate(&generateEpubThumbTask, "EpubThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &task) != pdPASS) {
+  if (xTaskCreate(&generateEpubThumbTask, "EpubThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &thumbTaskHandle) != pdPASS) {
     LOG_ERR("ERS", "Failed to create EPUB thumb task");
     delete ctx;
+    thumbTaskHandle = nullptr;
+    thumbTaskContext = nullptr;
+    return;
   }
+  thumbTaskContext = ctx;
+}
+
+void EpubReaderActivity::cancelHomeThumbGeneration() {
+  if (thumbTaskHandle) {
+    vTaskDelete(thumbTaskHandle);
+    thumbTaskHandle = nullptr;
+  }
+  delete thumbTaskContext;
+  thumbTaskContext = nullptr;
 }
 
 void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportWidth, const uint16_t viewportHeight) {
@@ -833,7 +847,7 @@ void EpubReaderActivity::silentIndexNextChapterIfNeeded(const uint16_t viewportW
     return;
   }
 
-  Section nextSection(epub, nextSpineIndex, renderer);
+  Section nextSection(epub.get(), nextSpineIndex, renderer);
   if (nextSection.loadSectionFile(SETTINGS.getReaderFontId(), SETTINGS.getReaderLineCompression(),
                                   SETTINGS.extraParagraphSpacing, SETTINGS.paragraphAlignment, viewportWidth,
                                   viewportHeight, SETTINGS.hyphenationEnabled, SETTINGS.embeddedStyle,
@@ -951,7 +965,13 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto tDisplay = millis();
 
   // Save bw buffer to reset buffer state after grayscale data sync
-  renderer.storeBwBuffer();
+  if (SETTINGS.textAntiAliasing) {
+    if (!renderer.storeBwBuffer()) {
+      LOG_ERR("ERS", "Failed to store BW buffer for anti-aliasing");
+      renderer.setRenderMode(GfxRenderer::BW);
+      return;
+    }
+  }
   const auto tBwStore = millis();
 
   // grayscale rendering
@@ -987,8 +1007,6 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
             tPrewarm - t0, tBwRender - tPrewarm, tDisplay - tBwRender, tBwStore - tDisplay, tGrayLsb - tBwStore,
             tGrayMsb - tGrayLsb, tGrayDisplay - tGrayMsb, tBwRestore - tGrayDisplay, tEnd - t0);
   } else {
-    // restore the bw data
-    renderer.restoreBwBuffer();
     const auto tBwRestore = millis();
 
     const auto tEnd = millis();

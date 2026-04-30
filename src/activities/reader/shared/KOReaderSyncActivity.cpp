@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <esp_task_wdt.h>
 
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
@@ -14,6 +15,8 @@
 #include "fontIds.h"
 
 namespace {
+void resetWatchdog() { esp_task_wdt_reset(); }
+
 void syncTimeWithNTP() {
   // Stop SNTP if already running (can't reconfigure while running)
   if (esp_sntp_enabled()) {
@@ -29,9 +32,11 @@ void syncTimeWithNTP() {
   int retry = 0;
   const int maxRetries = 50;  // 5 seconds max
   while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < maxRetries) {
+    resetWatchdog();
     vTaskDelay(100 / portTICK_PERIOD_MS);
     retry++;
   }
+  resetWatchdog();
 
   if (retry < maxRetries) {
     LOG_DBG("KOSync", "NTP time synced");
@@ -107,7 +112,9 @@ void KOReaderSyncActivity::performSync() {
   requestUpdateAndWait();
 
   // Fetch remote progress
+  resetWatchdog();
   const auto result = KOReaderSyncClient::getProgress(documentHash, remoteProgress);
+  resetWatchdog();
 
   if (result == KOReaderSyncClient::NOT_FOUND) {
     // No remote progress - offer to upload
@@ -170,7 +177,9 @@ void KOReaderSyncActivity::performUpload() {
   progress.progress = koPos.xpath;
   progress.percentage = koPos.percentage;
 
+  resetWatchdog();
   const auto result = KOReaderSyncClient::updateProgress(progress);
+  resetWatchdog();
 
   if (result != KOReaderSyncClient::OK) {
     wifiOff();

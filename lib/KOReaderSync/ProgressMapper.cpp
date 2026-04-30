@@ -4,7 +4,7 @@
 
 #include <cmath>
 
-KOReaderPosition ProgressMapper::toKOReader(const std::shared_ptr<Epub>& epub, const CrossPointPosition& pos) {
+KOReaderPosition ProgressMapper::toKOReader(const Epub* epub, const CrossPointPosition& pos) {
   KOReaderPosition result;
 
   // Calculate page progress within current spine item
@@ -29,7 +29,7 @@ KOReaderPosition ProgressMapper::toKOReader(const std::shared_ptr<Epub>& epub, c
   return result;
 }
 
-CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epub, const KOReaderPosition& koPos,
+CrossPointPosition ProgressMapper::toCrossPoint(const Epub* epub, const KOReaderPosition& koPos,
                                                 int currentSpineIndex, int totalPagesInCurrentSpine) {
   CrossPointPosition result;
   result.spineIndex = 0;

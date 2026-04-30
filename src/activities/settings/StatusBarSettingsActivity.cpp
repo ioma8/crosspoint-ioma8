@@ -91,27 +91,44 @@ void StatusBarSettingsActivity::loop() {
 }
 
 void StatusBarSettingsActivity::handleSelection() {
+  bool changed = false;
+
   if (selectedIndex == 0) {
     // Chapter Page Count
+    const auto currentValue = SETTINGS.statusBarChapterPageCount;
     SETTINGS.statusBarChapterPageCount = (SETTINGS.statusBarChapterPageCount + 1) % 2;
+    changed = SETTINGS.statusBarChapterPageCount != currentValue;
   } else if (selectedIndex == 1) {
     // Book Progress %
+    const auto currentValue = SETTINGS.statusBarBookProgressPercentage;
     SETTINGS.statusBarBookProgressPercentage = (SETTINGS.statusBarBookProgressPercentage + 1) % 2;
+    changed = SETTINGS.statusBarBookProgressPercentage != currentValue;
   } else if (selectedIndex == 2) {
     // Progress Bar
+    const auto currentValue = SETTINGS.statusBarProgressBar;
     SETTINGS.statusBarProgressBar = (SETTINGS.statusBarProgressBar + 1) % PROGRESS_BAR_ITEMS;
+    changed = SETTINGS.statusBarProgressBar != currentValue;
   } else if (selectedIndex == 3) {
     // Progress Bar Thickness
+    const auto currentValue = SETTINGS.statusBarProgressBarThickness;
     SETTINGS.statusBarProgressBarThickness =
         (SETTINGS.statusBarProgressBarThickness + 1) % PROGRESS_BAR_THICKNESS_ITEMS;
+    changed = SETTINGS.statusBarProgressBarThickness != currentValue;
   } else if (selectedIndex == 4) {
     // Chapter Title
+    const auto currentValue = SETTINGS.statusBarTitle;
     SETTINGS.statusBarTitle = (SETTINGS.statusBarTitle + 1) % TITLE_ITEMS;
+    changed = SETTINGS.statusBarTitle != currentValue;
   } else if (selectedIndex == 5) {
     // Show Battery
+    const auto currentValue = SETTINGS.statusBarBattery;
     SETTINGS.statusBarBattery = (SETTINGS.statusBarBattery + 1) % 2;
+    changed = SETTINGS.statusBarBattery != currentValue;
   }
-  SETTINGS.saveToFile();
+
+  if (changed) {
+    SETTINGS.saveToFile();
+  }
 }
 
 void StatusBarSettingsActivity::render(RenderLock&&) {

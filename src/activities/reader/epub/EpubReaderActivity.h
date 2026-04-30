@@ -2,13 +2,21 @@
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
+#include <freertos/task.h>
 
 #include "EpubReaderMenuActivity.h"
 #include "ReaderBookmarkCodec.h"
 #include "activities/Activity.h"
 
+struct EpubThumbTaskContext {
+  Epub* epub;
+  int coverHeight;
+  TaskHandle_t* taskHandle;
+  EpubThumbTaskContext** contextSlot;
+};
+
 class EpubReaderActivity final : public Activity {
-  std::shared_ptr<Epub> epub;
+  std::unique_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
@@ -31,6 +39,8 @@ class EpubReaderActivity final : public Activity {
   bool bookmarkChordActive = false;
   bool thumbGenerationPending = false;
   bool thumbGenerationArmed = false;
+  TaskHandle_t thumbTaskHandle = nullptr;
+  EpubThumbTaskContext* thumbTaskContext = nullptr;
   uint8_t fontPrewarmSuppressPages = 0;
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
@@ -69,6 +79,7 @@ class EpubReaderActivity final : public Activity {
   std::string getCurrentPageSnippet();
   void drawBookmarkIndicatorIfNeeded();
   void maybeScheduleHomeThumbGeneration();
+  void cancelHomeThumbGeneration();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);

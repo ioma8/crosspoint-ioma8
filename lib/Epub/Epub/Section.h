@@ -10,7 +10,7 @@ class Page;
 class GfxRenderer;
 
 class Section {
-  std::shared_ptr<Epub> epub;
+  Epub* epub;
   const int spineIndex;
   GfxRenderer& renderer;
   std::string filePath;
@@ -25,7 +25,7 @@ class Section {
   uint16_t pageCount = 0;
   int currentPage = 0;
 
-  explicit Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
+  explicit Section(Epub* epub, const int spineIndex, GfxRenderer& renderer)
       : epub(epub),
         spineIndex(spineIndex),
         renderer(renderer),

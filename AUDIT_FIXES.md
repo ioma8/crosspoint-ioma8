@@ -36,3 +36,35 @@
 - NET-L1: Added `strtol` overflow and range checks in OTA semver parsing.
 - MAP-M1: Clamped `sideButtonLayout` before indexing `kSideLayouts`.
 - MAP-M2: Clamped remapped front-button hardware indexes before passing them to `InputManager`.
+- ACT-C3: Moved the 500-byte filename buffer in `FileBrowserActivity::loadFiles()` from task stack to static storage.
+- ACT-C4: Moved the 500-byte filename buffer in `SleepActivity::renderCustomSleepScreen()` from task stack to static storage.
+
+- ACT-C1: Added cancellation tracking for EPUB home thumbnail generation so EpubReaderActivity::onExit() deletes any outstanding FreeRTOS thumbnail task and releases its context before dropping EPUB state.
+
+- ACT-C2: Added cancellation tracking for XTC home thumbnail generation so XtcReaderActivity::onExit() deletes any outstanding FreeRTOS thumbnail task and releases its context before dropping XTC state.
+
+- EPUB-H3: Added Section::loadPageFromSectionFile() bounds checks for currentPage, truncated section files, LUT offsets, and page offsets before seeking into cached section data.
+
+- EPUB-H4: Added Page::deserialize() guards for excessive page element counts and failed text/image block deserialization so corrupt caches cannot drive unbounded element allocation or null page elements.
+
+- EPUB-H5: Added a bounded FsFile string reader and used it for TextBlock cached words so corrupt word lengths are rejected before oversized allocation.
+
+- EPUB-H6: Closed tempNavFile on TOC nav parser setup and allocation failures so parseTocNavFile() no longer leaks SD file handles on those error paths.
+
+- GFX-H1: Made ditherer error-row allocations non-throwing, added validity checks, and guarded ditherer methods against null row buffers after allocation failure.
+
+- GFX-H2: Changed Bitmap ditherer construction to non-throwing allocation and return OomRowBuffer when the ditherer object or its row buffers cannot be allocated.
+
+- GFX-H3: Marked GfxRenderer::storeBwBuffer() [[nodiscard]] and changed the EPUB anti-aliasing path to abort grayscale rendering if the BW buffer snapshot cannot be stored.
+
+- GFX-H4: Replaced Arduino String serial command parsing in loop() with a fixed-size C-string buffer and overflow drop handling to avoid heap churn from incoming serial bytes.
+
+- ACT-H4: Removed the unconditional SettingsActivity Back save and guarded toggle saves so SETTINGS.saveToFile() only runs after a setting value actually changes.
+
+- ACT-H5: Added per-setting change tracking in StatusBarSettingsActivity so SETTINGS.saveToFile() runs only when the selected status bar value actually changes.
+
+- ACT-H6: Added watchdog resets around KOReader sync/upload blocking calls, reset during NTP polling, and set explicit 3-second KOReader HTTP timeouts to keep main-task blocking bounded.
+
+- ACT-H2: Replaced EPUB reader std::shared_ptr ownership with unique_ptr in EpubReaderActivity and raw non-owning pointers for bounded sub-activities, section parsing, progress mapping, and thumbnail task context.
+
+- ACT-H3: Replaced XTC reader std::shared_ptr ownership with unique_ptr in XtcReaderActivity and raw non-owning pointers for the chapter selector and thumbnail task context.

@@ -15,6 +15,7 @@ namespace {
 constexpr char DEVICE_NAME[] = "CrossPoint";
 constexpr char DEVICE_ID[] = "crosspoint-reader";
 constexpr int MAX_RESPONSE_BYTES = 16 * 1024;
+constexpr uint16_t HTTP_TIMEOUT_MS = 3000;
 
 class BoundedStringStream final : public Stream {
  public:
@@ -87,6 +88,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
   } else {
     http.begin(plainClient, url.c_str());
   }
+  http.setTimeout(HTTP_TIMEOUT_MS);
   addAuthHeaders(http, isHttpsUrl(url));
 
   const int httpCode = http.GET();
@@ -124,6 +126,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   } else {
     http.begin(plainClient, url.c_str());
   }
+  http.setTimeout(HTTP_TIMEOUT_MS);
   addAuthHeaders(http, isHttpsUrl(url));
 
   const int httpCode = http.GET();
@@ -196,6 +199,7 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   } else {
     http.begin(plainClient, url.c_str());
   }
+  http.setTimeout(HTTP_TIMEOUT_MS);
   addAuthHeaders(http, isHttpsUrl(url));
   http.addHeader("Content-Type", "application/json");
 

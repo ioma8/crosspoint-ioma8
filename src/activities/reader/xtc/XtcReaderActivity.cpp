@@ -26,11 +26,6 @@ namespace {
 constexpr unsigned long skipPageMs = 700;
 constexpr uint32_t THUMB_TASK_STACK_SIZE = 12288;
 
-struct XtcThumbTaskContext {
-  std::shared_ptr<Xtc> xtc;
-  int coverHeight;
-};
-
 void generateXtcThumbTask(void* param) {
   std::unique_ptr<XtcThumbTaskContext> ctx(static_cast<XtcThumbTaskContext*>(param));
   vTaskDelay(pdMS_TO_TICKS(10));
@@ -43,6 +38,12 @@ void generateXtcThumbTask(void* param) {
     }
   }
 
+  if (ctx->taskHandle) {
+    *ctx->taskHandle = nullptr;
+  }
+  if (ctx->contextSlot) {
+    *ctx->contextSlot = nullptr;
+  }
   vTaskDelete(nullptr);
 }
 }  // namespace
@@ -76,6 +77,7 @@ void XtcReaderActivity::onExit() {
   ReaderUtils::resetReaderSession();
   thumbGenerationPending = false;
   thumbGenerationArmed = false;
+  cancelHomeThumbGeneration();
   xtc.reset();
 }
 
@@ -84,7 +86,7 @@ void XtcReaderActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
       startActivityForResult(
-          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
+          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc.get(), currentPage),
           [this](const ActivityResult& result) {
             if (!result.isCancelled) {
               currentPage = std::get<PageResult>(result.data).page;
@@ -169,17 +171,31 @@ void XtcReaderActivity::maybeScheduleHomeThumbGeneration() {
     return;
   }
 
-  auto* ctx = new (std::nothrow) XtcThumbTaskContext{xtc, coverHeight};
+  auto* ctx = new (std::nothrow) XtcThumbTaskContext{xtc.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
   if (!ctx) {
     LOG_ERR("XTR", "Failed to allocate thumb task context");
     return;
   }
 
-  TaskHandle_t task = nullptr;
-  if (xTaskCreate(&generateXtcThumbTask, "XtcThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &task) != pdPASS) {
+  if (xTaskCreate(&generateXtcThumbTask, "XtcThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &thumbTaskHandle) != pdPASS) {
     LOG_ERR("XTR", "Failed to create XTC thumb task");
+    thumbTaskHandle = nullptr;
+    thumbTaskContext = nullptr;
     delete ctx;
+    return;
   }
+
+  thumbTaskContext = ctx;
+}
+
+void XtcReaderActivity::cancelHomeThumbGeneration() {
+  if (thumbTaskHandle) {
+    vTaskDelete(thumbTaskHandle);
+    thumbTaskHandle = nullptr;
+  }
+
+  delete thumbTaskContext;
+  thumbTaskContext = nullptr;
 }
 
 void XtcReaderActivity::renderPage() {

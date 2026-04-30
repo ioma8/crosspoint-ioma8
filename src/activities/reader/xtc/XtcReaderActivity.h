@@ -8,21 +8,32 @@
 #pragma once
 
 #include <Xtc.h>
+#include <freertos/task.h>
 
 #include "activities/Activity.h"
 
+struct XtcThumbTaskContext {
+  Xtc* xtc;
+  int coverHeight;
+  TaskHandle_t* taskHandle;
+  XtcThumbTaskContext** contextSlot;
+};
+
 class XtcReaderActivity final : public Activity {
-  std::shared_ptr<Xtc> xtc;
+  std::unique_ptr<Xtc> xtc;
 
   uint32_t currentPage = 0;
   int pagesUntilFullRefresh = 0;
   bool thumbGenerationPending = false;
   bool thumbGenerationArmed = false;
+  TaskHandle_t thumbTaskHandle = nullptr;
+  XtcThumbTaskContext* thumbTaskContext = nullptr;
 
   void renderPage();
   void saveProgress() const;
   void loadProgress();
   void maybeScheduleHomeThumbGeneration();
+  void cancelHomeThumbGeneration();
 
  public:
   explicit XtcReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::unique_ptr<Xtc> xtc)

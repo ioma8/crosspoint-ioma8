@@ -71,4 +71,24 @@ inline void readString(FsFile& file, std::string& s) {
     }
   }
 }
+
+inline bool readString(FsFile& file, std::string& s, const uint32_t maxLen) {
+  uint32_t len = 0;
+  readPod(file, len);
+  if (len > maxLen || len > MAX_CACHE_STRING_LEN) {
+    s.clear();
+    return false;
+  }
+  s.resize(len);
+  if (len == 0) {
+    return true;
+  }
+
+  const size_t read = file.read(reinterpret_cast<uint8_t*>(&s[0]), len);
+  if (read != len) {
+    s.clear();
+    return false;
+  }
+  return true;
+}
 }  // namespace serialization
