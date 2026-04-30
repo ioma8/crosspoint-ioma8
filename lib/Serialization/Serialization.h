@@ -4,6 +4,8 @@
 #include <iostream>
 
 namespace serialization {
+constexpr uint32_t MAX_CACHE_STRING_LEN = 65536;
+
 template <typename T>
 static void writePod(std::ostream& os, const T& value) {
   os.write(reinterpret_cast<const char*>(&value), sizeof(T));
@@ -37,20 +39,36 @@ inline void writeString(FsFile& file, const std::string& s) {
 }
 
 inline void readString(std::istream& is, std::string& s) {
-  uint32_t len;
+  uint32_t len = 0;
   readPod(is, len);
+  if (len > MAX_CACHE_STRING_LEN) {
+    s.clear();
+    is.setstate(std::ios::failbit);
+    return;
+  }
   s.resize(len);
   if (len > 0) {
     is.read(&s[0], len);
+    if (is.gcount() != static_cast<std::streamsize>(len)) {
+      s.clear();
+      is.setstate(std::ios::failbit);
+    }
   }
 }
 
 inline void readString(FsFile& file, std::string& s) {
-  uint32_t len;
+  uint32_t len = 0;
   readPod(file, len);
+  if (len > MAX_CACHE_STRING_LEN) {
+    s.clear();
+    return;
+  }
   s.resize(len);
   if (len > 0) {
-    file.read(reinterpret_cast<uint8_t*>(&s[0]), len);
+    const size_t read = file.read(reinterpret_cast<uint8_t*>(&s[0]), len);
+    if (read != len) {
+      s.clear();
+    }
   }
 }
 }  // namespace serialization

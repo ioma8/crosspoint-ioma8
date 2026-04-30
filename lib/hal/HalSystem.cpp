@@ -23,6 +23,13 @@ void __real_panic_abort(const char* message);
 void __real_panic_print_backtrace(const void* frame, int core);
 
 static DRAM_ATTR const char PANIC_REASON_UNKNOWN[] = "(unknown panic reason)";
+
+static uint32_t IRAM_ATTR read_unaligned_u32(uint32_t address) {
+  const auto* bytes = reinterpret_cast<const uint8_t*>(address);
+  return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8) |
+         (static_cast<uint32_t>(bytes[2]) << 16) | (static_cast<uint32_t>(bytes[3]) << 24);
+}
+
 void IRAM_ATTR __wrap_panic_abort(const char* message) {
   if (!message) message = PANIC_REASON_UNKNOWN;
   // IRAM-safe bounded copy (strncpy is not IRAM-safe in panic context)
@@ -49,7 +56,6 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
   const int per_line = 8;
   int depth = 0;
   for (int x = 0; x < 1024; x += per_line * sizeof(uint32_t)) {
-    uint32_t* spp = (uint32_t*)(sp + x);
     // panic_print_hex(sp + x);
     // panic_print_str(": ");
     panicStack[depth].sp = sp + x;
@@ -57,7 +63,7 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
       // panic_print_str("0x");
       // panic_print_hex(spp[y]);
       // panic_print_str(y == per_line - 1 ? "\r\n" : " ");
-      panicStack[depth].spp[y] = spp[y];
+      panicStack[depth].spp[y] = read_unaligned_u32(sp + x + y * sizeof(uint32_t));
     }
 
     depth++;
@@ -71,7 +77,7 @@ void IRAM_ATTR __wrap_panic_print_backtrace(const void* frame, int core) {
 
 // GNU ld --wrap=abort: libc abort() and paths like std::terminate call this first.
 // Prints a decoded backtrace to UART (needs CONFIG_ESP_SYSTEM_USE_EH_FRAME on RISC-V for best results).
-void __wrap_abort(void) {
+void IRAM_ATTR __wrap_abort(void) {
 #ifdef ENABLE_SERIAL_LOG
   esp_rom_printf("\n\n*** CrossPoint: abort() - stack backtrace (decode PCs: scripts/addr2line_crash.sh) ***\n");
   esp_backtrace_print(32);

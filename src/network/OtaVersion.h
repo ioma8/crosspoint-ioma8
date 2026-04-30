@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cerrno>
+#include <climits>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -23,20 +25,23 @@ inline bool parseSemverPrefix(const char* version, Semver& out) {
   }
 
   char* end = nullptr;
+  errno = 0;
   const long major = std::strtol(version, &end, 10);
-  if (end == version || *end != '.') {
+  if (errno == ERANGE || major < 0 || major > INT_MAX || end == version || *end != '.') {
     return false;
   }
   version = end + 1;
 
+  errno = 0;
   const long minor = std::strtol(version, &end, 10);
-  if (end == version || *end != '.') {
+  if (errno == ERANGE || minor < 0 || minor > INT_MAX || end == version || *end != '.') {
     return false;
   }
   version = end + 1;
 
+  errno = 0;
   const long patch = std::strtol(version, &end, 10);
-  if (end == version || !hasRecognizedSuffix(end)) {
+  if (errno == ERANGE || patch < 0 || patch > INT_MAX || end == version || !hasRecognizedSuffix(end)) {
     return false;
   }
 
@@ -70,7 +75,7 @@ inline bool isNewer(const std::string& latestVersion, const char* currentVersion
     return true;
   }
 
-  return latestVersion != currentVersion && !latestVersion.empty() && latestVersion[0] == 'v';
+  return false;
 }
 
 }  // namespace ota_version

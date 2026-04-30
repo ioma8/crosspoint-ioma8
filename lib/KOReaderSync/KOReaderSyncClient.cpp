@@ -14,15 +14,55 @@ namespace {
 // Device identifier for CrossPoint reader
 constexpr char DEVICE_NAME[] = "CrossPoint";
 constexpr char DEVICE_ID[] = "crosspoint-reader";
+constexpr int MAX_RESPONSE_BYTES = 16 * 1024;
 
-void addAuthHeaders(HTTPClient& http) {
+class BoundedStringStream final : public Stream {
+ public:
+  explicit BoundedStringStream(size_t maxBytes) : maxBytes_(maxBytes) { body_.reserve(maxBytes_); }
+
+  size_t write(uint8_t byte) override { return write(&byte, 1); }
+
+  size_t write(const uint8_t* buffer, size_t size) override {
+    if (body_.length() + size > maxBytes_) {
+      ok_ = false;
+      return 0;
+    }
+    body_.concat(reinterpret_cast<const char*>(buffer), size);
+    return size;
+  }
+
+  int available() override { return 0; }
+  int read() override { return -1; }
+  int peek() override { return -1; }
+  void flush() override {}
+
+  const String& body() const { return body_; }
+  bool ok() const { return ok_; }
+
+ private:
+  size_t maxBytes_;
+  String body_;
+  bool ok_ = true;
+};
+
+class VerifiedWiFiClientSecure final : public WiFiClientSecure {
+ public:
+  VerifiedWiFiClientSecure() {
+    attach_ssl_certificate_bundle(sslclient.get(), true);
+    _use_ca_bundle = true;
+  }
+};
+
+void addAuthHeaders(HTTPClient& http, bool useBasicAuth) {
   http.addHeader("Accept", "application/vnd.koreader.v1+json");
   http.addHeader("x-auth-user", KOREADER_STORE.getUsername().c_str());
   http.addHeader("x-auth-key", KOREADER_STORE.getMd5Password().c_str());
 
   // HTTP Basic Auth (RFC 7617) header. This is needed to support koreader sync server embedded in Calibre Web Automated
   // (https://github.com/crocodilestick/Calibre-Web-Automated/blob/main/cps/progress_syncing/protocols/kosync.py)
-  http.setAuthorization(KOREADER_STORE.getUsername().c_str(), KOREADER_STORE.getPassword().c_str());
+  if (useBasicAuth) {
+    http.setAuthorization(KOREADER_STORE.getUsername().c_str(), KOREADER_STORE.getPassword().c_str());
+  }
 }
 
 bool isHttpsUrl(const std::string& url) { return url.rfind("https://", 0) == 0; }
@@ -42,13 +82,12 @@ KOReaderSyncClient::Error KOReaderSyncClient::authenticate() {
   WiFiClient plainClient;
 
   if (isHttpsUrl(url)) {
-    secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
+    secureClient.reset(new VerifiedWiFiClientSecure);
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());
   }
-  addAuthHeaders(http);
+  addAuthHeaders(http, isHttpsUrl(url));
 
   const int httpCode = http.GET();
   http.end();
@@ -80,23 +119,33 @@ KOReaderSyncClient::Error KOReaderSyncClient::getProgress(const std::string& doc
   WiFiClient plainClient;
 
   if (isHttpsUrl(url)) {
-    secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
+    secureClient.reset(new VerifiedWiFiClientSecure);
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());
   }
-  addAuthHeaders(http);
+  addAuthHeaders(http, isHttpsUrl(url));
 
   const int httpCode = http.GET();
 
   if (httpCode == 200) {
-    // Parse JSON response from response string
-    String responseBody = http.getString();
+    const int responseSize = http.getSize();
+    if (responseSize > MAX_RESPONSE_BYTES) {
+      LOG_ERR("KOSync", "Response size refused: %d", responseSize);
+      http.end();
+      return SERVER_ERROR;
+    }
+
+    BoundedStringStream responseStream(MAX_RESPONSE_BYTES);
+    const int writeResult = http.writeToStream(&responseStream);
     http.end();
+    if (writeResult < 0 || !responseStream.ok()) {
+      LOG_ERR("KOSync", "Response read failed or exceeded limit");
+      return SERVER_ERROR;
+    }
 
     JsonDocument doc;
-    const DeserializationError error = deserializeJson(doc, responseBody);
+    const DeserializationError error = deserializeJson(doc, responseStream.body());
 
     if (error) {
       LOG_ERR("KOSync", "JSON parse failed: %s", error.c_str());
@@ -142,13 +191,12 @@ KOReaderSyncClient::Error KOReaderSyncClient::updateProgress(const KOReaderProgr
   WiFiClient plainClient;
 
   if (isHttpsUrl(url)) {
-    secureClient.reset(new WiFiClientSecure);
-    secureClient->setInsecure();
+    secureClient.reset(new VerifiedWiFiClientSecure);
     http.begin(*secureClient, url.c_str());
   } else {
     http.begin(plainClient, url.c_str());
   }
-  addAuthHeaders(http);
+  addAuthHeaders(http, isHttpsUrl(url));
   http.addHeader("Content-Type", "application/json");
 
   // Build JSON body (timestamp not required per API spec)

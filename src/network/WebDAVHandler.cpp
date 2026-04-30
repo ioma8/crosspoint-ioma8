@@ -9,11 +9,25 @@
 namespace {
 const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 constexpr size_t HIDDEN_ITEMS_COUNT = sizeof(HIDDEN_ITEMS) / sizeof(HIDDEN_ITEMS[0]);
+#ifndef CROSSPOINT_WEB_AUTH_USER
+#define CROSSPOINT_WEB_AUTH_USER "crosspoint"
+#endif
+#ifndef CROSSPOINT_WEB_AUTH_PASSWORD
+#define CROSSPOINT_WEB_AUTH_PASSWORD "crosspoint"
+#endif
 
 // RFC 1123 date format helper: "Sun, 06 Nov 1994 08:49:37 GMT"
 // ESP32 doesn't have real-time clock set by default, so we use a fixed epoch date
 // as a fallback. The date is not critical for WebDAV Class 1 operations.
 const char* FIXED_DATE = "Thu, 01 Jan 2024 00:00:00 GMT";
+
+bool requireWebAuth(WebServer& server) {
+  if (server.authenticate(CROSSPOINT_WEB_AUTH_USER, CROSSPOINT_WEB_AUTH_PASSWORD)) {
+    return true;
+  }
+  server.requestAuthentication();
+  return false;
+}
 }  // namespace
 
 // ── RequestHandler interface ─────────────────────────────────────────────────
@@ -41,7 +55,7 @@ bool WebDAVHandler::canHandle(WebServer& server, HTTPMethod method, const String
 
 bool WebDAVHandler::canRaw(WebServer& server, const String& uri) {
   (void)uri;
-  return server.method() == HTTP_PUT;
+  return server.method() == HTTP_PUT && server.authenticate(CROSSPOINT_WEB_AUTH_USER, CROSSPOINT_WEB_AUTH_PASSWORD);
 }
 
 void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
@@ -117,6 +131,9 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
 bool WebDAVHandler::handle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)uri;
+  if (!requireWebAuth(server)) {
+    return true;
+  }
   switch (method) {
     case HTTP_OPTIONS:
       handleOptions(server);
@@ -625,7 +642,7 @@ void WebDAVHandler::handleCopy(WebServer& s) {
   }
 
   // Streaming copy with 4KB buffer on stack
-  uint8_t buf[4096];
+  uint8_t buf[256];
   bool copyOk = true;
   while (srcFile.available()) {
     esp_task_wdt_reset();

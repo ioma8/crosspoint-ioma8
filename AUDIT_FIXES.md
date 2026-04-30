@@ -1,0 +1,38 @@
+# Audit Fixes
+
+- NET-C1: Added HTTP Basic Auth checks to all CrossPoint web routes, WebDAV handlers, and WebSocket uploads. Credentials can be overridden at build time with `CROSSPOINT_WEB_AUTH_USER` and `CROSSPOINT_WEB_AUTH_PASSWORD`.
+- NET-C2: Normalized download paths and replaced last-segment-only protection with full-path protected-segment checks.
+- NET-C3: Rejected WebSocket uploads targeting protected paths or unsafe filenames before opening destination files.
+- NET-H1: Normalized file-list paths and denied listings under protected path segments such as `/.crosspoint`.
+- NET-H2: Rejected HTTP multipart upload filenames containing path separators, `..`, or protected item names.
+- NET-H3: Rejected WebSocket upload filenames containing path separators, `..`, or protected item names.
+- NET-H4: Normalized delete paths and replaced last-segment-only protection with full-path protected-segment checks.
+- NET-H5: Reduced `handleDownload` stack transfer buffer from 4096 bytes to 256 bytes.
+- NET-H6: Reduced `WebDAVHandler::handleCopy` stack transfer buffer from 4096 bytes to 256 bytes.
+- NET-H7: Added null check for `new WebSocketsServer(...)` before use.
+- NET-M6: Replaced WebSocket upload size parsing via `String::toInt()` with checked `strtoull` parsing and `size_t` bounds validation.
+- NET-M7: Normalized create-folder parent paths and rejected creation under protected segments.
+- NET-L2: Removed partial HTTP upload files when final buffered write fails.
+- NET-L6: Added null check for `new WebDAVHandler()` before registration.
+- SER-C3: Added a 64 KiB maximum cache string length and short-read clearing for `serialization::readString`.
+- ZIP-C1: Replaced unaligned EOCD `reinterpret_cast` reads with `memcpy` into typed locals.
+- ZIP-C2: Added oversized/overflow guards before `readFileToMemory` allocation.
+- ZIP-H1: Freed the output buffer when the secondary deflated-data allocation fails.
+- ZIP-H2: Initialized central-directory length fields and checked key `file.read()` return values before use.
+- ZIP-M1: Added checked central-directory reads in the file-stat scan paths touched by this fix pass.
+- ZIP-L1: Corrected a ZIP read error log format for `uint32_t` and `size_t` values.
+- HAL-C1: Replaced raw panic stack-pointer word dereferences with `memcpy` to avoid RISC-V alignment faults.
+- HAL-M1: Marked `__wrap_abort` with `IRAM_ATTR`.
+- NET-C4: Removed unconditional `NetworkClientSecure::setInsecure()` calls from HTTP downloader HTTPS paths and attached the ESP-IDF CA bundle for certificate validation.
+- NET-H8: Checked `HTTPClient::writeToStream()` return value in the stream fetch path.
+- NET-C5: Re-enabled OTA TLS hostname validation by clearing `skip_cert_common_name_check` for release metadata and firmware downloads.
+- KOR-C1: Removed unconditional `WiFiClientSecure::setInsecure()` from KOReader sync HTTPS calls and attached the ESP-IDF CA bundle for certificate validation.
+- KOR-C2: Stopped sending HTTP Basic Auth plaintext passwords on non-HTTPS KOReader sync URLs.
+- KOR-H1: Added a 16 KiB bounded stream reader before parsing KOReader progress JSON, including chunked responses without `Content-Length`.
+- ACT-H1: Added a `FINISHED` state transition to `SHUTTING_DOWN` so successful OTA installs restart automatically.
+- OPDS-M1: Added a null parser guard in `OpdsParser::flush()`.
+- OPDS-M2: Capped OPDS text-node accumulation and entry count to prevent unbounded heap growth.
+- NET-M8: Stopped treating `v1.2.3` and `1.2.3` as different/newer when semver numbers match.
+- NET-L1: Added `strtol` overflow and range checks in OTA semver parsing.
+- MAP-M1: Clamped `sideButtonLayout` before indexing `kSideLayouts`.
+- MAP-M2: Clamped remapped front-button hardware indexes before passing them to `InputManager`.

@@ -193,5 +193,11 @@ void OtaUpdateActivity::loop() {
 
   if (state == SHUTTING_DOWN) {
     ESP.restart();
+    return;
+  }
+
+  if (state == FINISHED) {
+    state = SHUTTING_DOWN;
+    requestUpdate();
   }
 }
