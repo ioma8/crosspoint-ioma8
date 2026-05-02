@@ -378,12 +378,6 @@ void setup() {
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
-  setupDisplayAndFonts();
-  bootTimingMark("setupDisplayAndFonts");
-
-  activityManager.goToBoot();
-  bootTimingMark("activityManager.goToBoot");
-
   APP_STATE.loadFromFile();
   bootTimingMark("APP_STATE.loadFromFile");
   RECENT_BOOKS.loadFromFile();
@@ -391,11 +385,20 @@ void setup() {
 
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+  const bool bootToHome = APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+                          mappedInputManager.isPressed(MappedInputManager::Button::Back) ||
+                          APP_STATE.readerActivityLoadCount > 0;
+
+  setupDisplayAndFonts();
+  bootTimingMark("setupDisplayAndFonts");
+
+  if (bootToHome) {
     activityManager.goHome();
     bootTimingMark("activityManager.goHome");
   } else {
+    activityManager.goToBoot();
+    bootTimingMark("activityManager.goToBoot");
+
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
     APP_STATE.openEpubPath = "";
