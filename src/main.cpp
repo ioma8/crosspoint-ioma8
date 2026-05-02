@@ -127,6 +127,18 @@ EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 namespace {
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 32;
 
+#ifdef ENABLE_BOOT_TIMING
+unsigned long bootTimingLast = 0;
+
+void bootTimingMark(const char* phase) {
+  const unsigned long now = millis();
+  LOG_INF("BOOT", "%s: +%lu ms, total=%lu ms", phase, now - bootTimingLast, now);
+  bootTimingLast = now;
+}
+#else
+void bootTimingMark(const char*) {}
+#endif
+
 bool commandEquals(const char* cmd, const char* expected) {
   while (*cmd == ' ' || *cmd == '\t') {
     cmd++;
@@ -299,10 +311,16 @@ void setupDisplayAndFonts() {
 
 void setup() {
   t1 = millis();
+#ifdef ENABLE_BOOT_TIMING
+  bootTimingLast = t1;
+#endif
 
   HalSystem::begin();
+  bootTimingMark("HalSystem::begin");
   gpio.begin();
+  bootTimingMark("gpio.begin");
   powerManager.begin();
+  bootTimingMark("powerManager.begin");
 
   // Only start serial if USB connected
   if (gpio.isUsbConnected()) {
@@ -313,6 +331,7 @@ void setup() {
       delay(10);
     }
   }
+  bootTimingMark("serial setup");
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
@@ -322,14 +341,20 @@ void setup() {
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
+  bootTimingMark("Storage.begin");
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
+  bootTimingMark("panic check");
 
   SETTINGS.loadFromFile();
+  bootTimingMark("SETTINGS.loadFromFile");
   I18N.loadSettings();
+  bootTimingMark("I18N.loadSettings");
   KOREADER_STORE.loadFromFile();
+  bootTimingMark("KOREADER_STORE.loadFromFile");
   UITheme::getInstance().reload();
+  bootTimingMark("UITheme::reload");
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
   switch (gpio.getWakeupReason()) {
@@ -354,17 +379,22 @@ void setup() {
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
   setupDisplayAndFonts();
+  bootTimingMark("setupDisplayAndFonts");
 
   activityManager.goToBoot();
+  bootTimingMark("activityManager.goToBoot");
 
   APP_STATE.loadFromFile();
+  bootTimingMark("APP_STATE.loadFromFile");
   RECENT_BOOKS.loadFromFile();
+  bootTimingMark("RECENT_BOOKS.loadFromFile");
 
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
   if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
       mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     activityManager.goHome();
+    bootTimingMark("activityManager.goHome");
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
@@ -372,10 +402,12 @@ void setup() {
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path);
+    bootTimingMark("activityManager.goToReader");
   }
 
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
+  bootTimingMark("waitForPowerRelease");
 }
 
 void loop() {
