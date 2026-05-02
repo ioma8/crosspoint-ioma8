@@ -9,6 +9,7 @@
 #include <Utf8.h>
 #include <Xtc.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -41,13 +42,28 @@ void HomeActivity::loadRecentBooks(int maxBooks) {
       break;
     }
 
-    // Skip if file no longer exists
-    if (!Storage.exists(book.path.c_str())) {
-      continue;
-    }
-
     recentBooks.push_back(book);
   }
+}
+
+bool HomeActivity::validateRecentBookPaths() {
+  const auto originalSize = recentBooks.size();
+  recentBooks.erase(std::remove_if(recentBooks.begin(), recentBooks.end(),
+                                   [](const RecentBook& book) { return !Storage.exists(book.path.c_str()); }),
+                    recentBooks.end());
+
+  if (recentBooks.size() == originalSize) {
+    return false;
+  }
+
+  const int menuCount = getMenuItemCount();
+  if (selectorIndex >= menuCount) {
+    selectorIndex = std::max(0, menuCount - 1);
+  }
+  recentsLoaded = false;
+  coverRendered = false;
+  freeCoverBuffer();
+  return true;
 }
 
 void HomeActivity::loadRecentCovers(int coverHeight) {
@@ -213,6 +229,7 @@ void HomeActivity::render(RenderLock&&) {
 
   if (!firstRenderDone) {
     firstRenderDone = true;
+    validateRecentBookPaths();
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
@@ -220,7 +237,14 @@ void HomeActivity::render(RenderLock&&) {
   }
 }
 
-void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToReader(path); }
+void HomeActivity::onSelectBook(const std::string& path) {
+  if (!Storage.exists(path.c_str())) {
+    validateRecentBookPaths();
+    requestUpdate();
+    return;
+  }
+  activityManager.goToReader(path);
+}
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
