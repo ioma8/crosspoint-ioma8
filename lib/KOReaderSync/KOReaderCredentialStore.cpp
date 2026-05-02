@@ -52,6 +52,8 @@ bool KOReaderCredentialStore::saveToFile() const {
 }
 
 bool KOReaderCredentialStore::loadFromFile() {
+  loaded = true;
+
   // Try JSON first
   if (Storage.exists(KOREADER_FILE_JSON)) {
     String json = Storage.readFile(KOREADER_FILE_JSON);
@@ -82,6 +84,13 @@ bool KOReaderCredentialStore::loadFromFile() {
 
   LOG_DBG("KRS", "No credentials file found");
   return false;
+}
+
+bool KOReaderCredentialStore::ensureLoaded() {
+  if (loaded) {
+    return true;
+  }
+  return loadFromFile();
 }
 
 bool KOReaderCredentialStore::loadFromJson(const char* json, bool* needsResave) {
@@ -146,12 +155,24 @@ bool KOReaderCredentialStore::loadFromBinaryFile() {
 }
 
 void KOReaderCredentialStore::setCredentials(const std::string& user, const std::string& pass) {
+  ensureLoaded();
   username = user;
   password = pass;
   LOG_DBG("KRS", "Set credentials for user: %s", user.c_str());
 }
 
-std::string KOReaderCredentialStore::getMd5Password() const {
+const std::string& KOReaderCredentialStore::getUsername() {
+  ensureLoaded();
+  return username;
+}
+
+const std::string& KOReaderCredentialStore::getPassword() {
+  ensureLoaded();
+  return password;
+}
+
+std::string KOReaderCredentialStore::getMd5Password() {
+  ensureLoaded();
   if (password.empty()) {
     return "";
   }
@@ -165,9 +186,13 @@ std::string KOReaderCredentialStore::getMd5Password() const {
   return md5.toString().c_str();
 }
 
-bool KOReaderCredentialStore::hasCredentials() const { return !username.empty() && !password.empty(); }
+bool KOReaderCredentialStore::hasCredentials() {
+  ensureLoaded();
+  return !username.empty() && !password.empty();
+}
 
 void KOReaderCredentialStore::clearCredentials() {
+  ensureLoaded();
   secureClear(username);
   secureClear(password);
   saveToFile();
@@ -175,11 +200,18 @@ void KOReaderCredentialStore::clearCredentials() {
 }
 
 void KOReaderCredentialStore::setServerUrl(const std::string& url) {
+  ensureLoaded();
   serverUrl = url;
   LOG_DBG("KRS", "Set server URL: %s", url.empty() ? "(default)" : url.c_str());
 }
 
-std::string KOReaderCredentialStore::getBaseUrl() const {
+const std::string& KOReaderCredentialStore::getServerUrl() {
+  ensureLoaded();
+  return serverUrl;
+}
+
+std::string KOReaderCredentialStore::getBaseUrl() {
+  ensureLoaded();
   if (serverUrl.empty()) {
     return DEFAULT_SERVER_URL;
   }
@@ -193,6 +225,12 @@ std::string KOReaderCredentialStore::getBaseUrl() const {
 }
 
 void KOReaderCredentialStore::setMatchMethod(DocumentMatchMethod method) {
+  ensureLoaded();
   matchMethod = method;
   LOG_DBG("KRS", "Set match method: %s", method == DocumentMatchMethod::FILENAME ? "Filename" : "Binary");
+}
+
+DocumentMatchMethod KOReaderCredentialStore::getMatchMethod() {
+  ensureLoaded();
+  return matchMethod;
 }

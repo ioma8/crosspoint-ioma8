@@ -351,8 +351,6 @@ void setup() {
   bootTimingMark("SETTINGS.loadFromFile");
   I18N.loadSettings();
   bootTimingMark("I18N.loadSettings");
-  KOREADER_STORE.loadFromFile();
-  bootTimingMark("KOREADER_STORE.loadFromFile");
   UITheme::getInstance().reload();
   bootTimingMark("UITheme::reload");
   ButtonNavigator::setMappedInputManager(mappedInputManager);
