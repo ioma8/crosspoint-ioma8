@@ -52,8 +52,6 @@ bool KOReaderCredentialStore::saveToFile() const {
 }
 
 bool KOReaderCredentialStore::loadFromFile() {
-  loaded = true;
-
   // Try JSON first
   if (Storage.exists(KOREADER_FILE_JSON)) {
     String json = Storage.readFile(KOREADER_FILE_JSON);
@@ -64,6 +62,9 @@ bool KOReaderCredentialStore::loadFromFile() {
         saveToFile();
         LOG_DBG("KRS", "Resaved KOReader credentials to update format");
       }
+      if (result) {
+        loaded = true;
+      }
       return result;
     }
   }
@@ -71,6 +72,7 @@ bool KOReaderCredentialStore::loadFromFile() {
   // Fall back to binary migration
   if (Storage.exists(KOREADER_FILE_BIN)) {
     if (loadFromBinaryFile()) {
+      loaded = true;
       if (saveToFile()) {
         Storage.rename(KOREADER_FILE_BIN, KOREADER_FILE_BAK);
         LOG_DBG("KRS", "Migrated koreader.bin to koreader.json");
@@ -83,6 +85,7 @@ bool KOReaderCredentialStore::loadFromFile() {
   }
 
   LOG_DBG("KRS", "No credentials file found");
+  loaded = true;
   return false;
 }
 

@@ -24,6 +24,7 @@
 #include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BootTiming.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -126,18 +127,6 @@ EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
 namespace {
 constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 32;
-
-#ifdef ENABLE_BOOT_TIMING
-unsigned long bootTimingLast = 0;
-
-void bootTimingMark(const char* phase) {
-  const unsigned long now = millis();
-  LOG_INF("BOOT", "%s: +%lu ms, total=%lu ms", phase, now - bootTimingLast, now);
-  bootTimingLast = now;
-}
-#else
-void bootTimingMark(const char*) {}
-#endif
 
 bool commandEquals(const char* cmd, const char* expected) {
   while (*cmd == ' ' || *cmd == '\t') {
@@ -311,9 +300,7 @@ void setupDisplayAndFonts() {
 
 void setup() {
   t1 = millis();
-#ifdef ENABLE_BOOT_TIMING
-  bootTimingLast = t1;
-#endif
+  bootTimingReset(t1);
 
   HalSystem::begin();
   bootTimingMark("HalSystem::begin");

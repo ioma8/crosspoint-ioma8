@@ -19,6 +19,7 @@
 #include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BootTiming.h"
 
 int HomeActivity::getMenuItemCount() const {
   int count = 5;  // File Browser, Recents, File transfer, Games, Settings
@@ -147,6 +148,16 @@ void HomeActivity::freeCoverBuffer() {
 }
 
 void HomeActivity::loop() {
+  if (validateRecentsAfterFirstRender) {
+    RenderLock lock(*this);
+    validateRecentsAfterFirstRender = false;
+    const bool changed = validateRecentBookPaths();
+    lock.unlock();
+    if (changed) {
+      requestUpdate();
+    }
+  }
+
   const int menuCount = getMenuItemCount();
 
   buttonNavigator.onNext([this, menuCount] {
@@ -229,7 +240,8 @@ void HomeActivity::render(RenderLock&&) {
 
   if (!firstRenderDone) {
     firstRenderDone = true;
-    validateRecentBookPaths();
+    validateRecentsAfterFirstRender = true;
+    bootTimingMark("HomeActivity first render");
     requestUpdate();
   } else if (!recentsLoaded && !recentsLoading) {
     recentsLoading = true;
