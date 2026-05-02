@@ -267,6 +267,11 @@ void ActivityManager::requestUpdateAndWait() {
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
+void ActivityManager::requestUpdateAndWaitConsumingPending() {
+  requestedUpdate = false;
+  requestUpdateAndWait();
+}
+
 // RenderLock
 
 RenderLock::RenderLock() {

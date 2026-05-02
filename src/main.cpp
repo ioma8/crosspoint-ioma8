@@ -309,9 +309,6 @@ void setup() {
   powerManager.begin();
   bootTimingMark("powerManager.begin");
   const auto wakeupReason = gpio.getWakeupReason();
-  if (wakeupReason == HalGPIO::WakeupReason::AfterUSBPower) {
-    powerManager.startDeepSleep(gpio);
-  }
 
   // Only start serial if USB connected
   if (gpio.isUsbConnected()) {
@@ -325,6 +322,11 @@ void setup() {
 #endif
   }
   bootTimingMark("serial setup");
+
+  if (wakeupReason == HalGPIO::WakeupReason::AfterUSBPower) {
+    LOG_DBG("MAIN", "Wakeup reason: After USB Power");
+    powerManager.startDeepSleep(gpio);
+  }
 
   // SD Card Initialization
   // We need 6 open files concurrently when parsing a new chapter
@@ -382,7 +384,7 @@ void setup() {
   if (bootToHome) {
     activityManager.goHome();
     bootTimingMark("activityManager.goHome");
-    activityManager.requestUpdateAndWait();
+    activityManager.requestUpdateAndWaitConsumingPending();
     bootTimingMark("first Home render");
   } else {
     activityManager.goToBoot();

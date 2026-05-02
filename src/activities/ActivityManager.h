@@ -107,6 +107,10 @@ class ActivityManager {
   // Trigger a render and block until it completes.
   // Must NOT be called from the render task or while holding a RenderLock.
   void requestUpdateAndWait();
+
+  // Trigger a render immediately, consume any already queued deferred render, and block until it completes.
+  // Used when setup needs the first screen visible before returning to the normal loop.
+  void requestUpdateAndWaitConsumingPending();
 };
 
 extern ActivityManager activityManager;  // singleton, to be defined in main.cpp
