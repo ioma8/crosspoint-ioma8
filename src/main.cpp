@@ -308,15 +308,21 @@ void setup() {
   bootTimingMark("gpio.begin");
   powerManager.begin();
   bootTimingMark("powerManager.begin");
+  const auto wakeupReason = gpio.getWakeupReason();
+  if (wakeupReason == HalGPIO::WakeupReason::AfterUSBPower) {
+    powerManager.startDeepSleep(gpio);
+  }
 
   // Only start serial if USB connected
   if (gpio.isUsbConnected()) {
     Serial.begin(115200);
+#if defined(CROSSPOINT_DEBUG_BUILD) || defined(ENABLE_BOOT_TIMING)
     // Wait up to 3 seconds for Serial to be ready to catch early logs
     unsigned long start = millis();
     while (!Serial && (millis() - start) < 3000) {
       delay(10);
     }
+#endif
   }
   bootTimingMark("serial setup");
 
@@ -342,19 +348,15 @@ void setup() {
   bootTimingMark("UITheme::reload");
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
-  switch (gpio.getWakeupReason()) {
+  switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // For normal wakeups, verify power button press duration
       LOG_DBG("MAIN", "Verifying power button press duration");
       verifyPowerButtonDuration();
       break;
-    case HalGPIO::WakeupReason::AfterUSBPower:
-      // If USB power caused a cold boot, go back to sleep
-      LOG_DBG("MAIN", "Wakeup reason: After USB Power");
-      powerManager.startDeepSleep(gpio);
-      break;
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
+    case HalGPIO::WakeupReason::AfterUSBPower:
     case HalGPIO::WakeupReason::Other:
     default:
       break;
@@ -380,6 +382,8 @@ void setup() {
   if (bootToHome) {
     activityManager.goHome();
     bootTimingMark("activityManager.goHome");
+    activityManager.requestUpdateAndWait();
+    bootTimingMark("first Home render");
   } else {
     activityManager.goToBoot();
     bootTimingMark("activityManager.goToBoot");
