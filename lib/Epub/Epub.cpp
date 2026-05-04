@@ -12,6 +12,14 @@
 #include "Epub/parsers/TocNavParser.h"
 #include "Epub/parsers/TocNcxParser.h"
 
+namespace {
+void notifyLoadProgress(Epub::LoadProgressCallback progressCallback, void* progressContext) {
+  if (progressCallback) {
+    progressCallback(progressContext);
+  }
+}
+}  // namespace
+
 bool Epub::findContentOpfFile(std::string* contentOpfFile) const {
   const auto containerPath = "META-INF/container.xml";
   size_t containerSize;
@@ -225,12 +233,14 @@ bool Epub::parseTocNavFile() const {
 
   if (!navParser.setup()) {
     LOG_ERR("EBP", "Could not setup toc nav parser");
+    tempNavFile.close();
     return false;
   }
 
   const auto navBuffer = static_cast<uint8_t*>(malloc(1024));
   if (!navBuffer) {
     LOG_ERR("EBP", "Could not allocate memory for toc nav parser");
+    tempNavFile.close();
     return false;
   }
 
@@ -331,27 +341,33 @@ void Epub::parseCssFiles() const {
 }
 
 // load in the meta data for the epub file
-bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
+bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss, LoadProgressCallback progressCallback,
+                void* progressContext) {
   LOG_DBG("EBP", "Loading ePub: %s", filepath.c_str());
 
   // Initialize spine/TOC cache
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   // Always create CssParser - needed for inline style parsing even without CSS files
   cssParser.reset(new CssParser(cachePath));
+  notifyLoadProgress(progressCallback, progressContext);
 
   // Try to load existing cache first
   if (bookMetadataCache->load()) {
+    notifyLoadProgress(progressCallback, progressContext);
     if (!skipLoadingCss) {
       // Rebuild CSS cache when missing or when cache version changed (loadFromCache removes stale file)
       if (!cssParser->hasCache() || !cssParser->loadFromCache()) {
         LOG_DBG("EBP", "CSS rules cache missing or stale, attempting to parse CSS files");
         cssParser->deleteCache();
+        notifyLoadProgress(progressCallback, progressContext);
 
         if (!parseContentOpf(bookMetadataCache->coreMetadata)) {
           LOG_ERR("EBP", "Could not parse content.opf from cached bookMetadata for CSS files");
           // continue anyway - book will work without CSS and we'll still load any inline style CSS
         }
+        notifyLoadProgress(progressCallback, progressContext);
         parseCssFiles();
+        notifyLoadProgress(progressCallback, progressContext);
         // Invalidate section caches so they are rebuilt with the new CSS
         Storage.removeDir((cachePath + "/sections").c_str());
       }
@@ -368,6 +384,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
   // Cache doesn't exist or is invalid, build it
   LOG_DBG("EBP", "Cache not found, building spine/TOC cache");
   setupCacheDir();
+  notifyLoadProgress(progressCallback, progressContext);
 
   const uint32_t indexingStart = millis();
 
@@ -388,6 +405,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not parse content.opf");
     return false;
   }
+  notifyLoadProgress(progressCallback, progressContext);
   if (!bookMetadataCache->endContentOpfPass()) {
     LOG_ERR("EBP", "Could not end writing content.opf pass");
     return false;
@@ -424,6 +442,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not end writing toc pass");
     return false;
   }
+  notifyLoadProgress(progressCallback, progressContext);
   LOG_DBG("EBP", "TOC pass completed in %lu ms", millis() - tocStart);
 
   // Close the cache files
@@ -438,6 +457,7 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Could not update mappings and sizes");
     return false;
   }
+  notifyLoadProgress(progressCallback, progressContext);
   LOG_DBG("EBP", "buildBookBin completed in %lu ms", millis() - buildStart);
   LOG_DBG("EBP", "Total indexing completed in %lu ms", millis() - indexingStart);
 
@@ -451,10 +471,12 @@ bool Epub::load(const bool buildIfMissing, const bool skipLoadingCss) {
     LOG_ERR("EBP", "Failed to reload cache after writing");
     return false;
   }
+  notifyLoadProgress(progressCallback, progressContext);
 
   if (!skipLoadingCss) {
     // Parse CSS files after cache reload
     parseCssFiles();
+    notifyLoadProgress(progressCallback, progressContext);
     Storage.removeDir((cachePath + "/sections").c_str());
   }
 

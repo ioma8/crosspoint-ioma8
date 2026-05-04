@@ -15,25 +15,32 @@ constexpr SideLayoutMap kSideLayouts[] = {
     {HalGPIO::BTN_UP, HalGPIO::BTN_DOWN},
     {HalGPIO::BTN_DOWN, HalGPIO::BTN_UP},
 };
+
+uint8_t validFrontButton(uint8_t button, uint8_t fallback) {
+  return button < CrossPointSettings::FRONT_BUTTON_HARDWARE::FRONT_BUTTON_HARDWARE_COUNT ? button : fallback;
+}
 }  // namespace
 
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
-  const auto sideLayout = static_cast<CrossPointSettings::SIDE_BUTTON_LAYOUT>(SETTINGS.sideButtonLayout);
+  const uint8_t sideLayout =
+      SETTINGS.sideButtonLayout < CrossPointSettings::SIDE_BUTTON_LAYOUT::SIDE_BUTTON_LAYOUT_COUNT
+          ? SETTINGS.sideButtonLayout
+          : CrossPointSettings::SIDE_BUTTON_LAYOUT::PREV_NEXT;
   const auto& side = kSideLayouts[sideLayout];
 
   switch (button) {
     case Button::Back:
       // Logical Back maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonBack);
+      return (gpio.*fn)(validFrontButton(SETTINGS.frontButtonBack, HalGPIO::BTN_BACK));
     case Button::Confirm:
       // Logical Confirm maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonConfirm);
+      return (gpio.*fn)(validFrontButton(SETTINGS.frontButtonConfirm, HalGPIO::BTN_CONFIRM));
     case Button::Left:
       // Logical Left maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonLeft);
+      return (gpio.*fn)(validFrontButton(SETTINGS.frontButtonLeft, HalGPIO::BTN_LEFT));
     case Button::Right:
       // Logical Right maps to user-configured front button.
-      return (gpio.*fn)(SETTINGS.frontButtonRight);
+      return (gpio.*fn)(validFrontButton(SETTINGS.frontButtonRight, HalGPIO::BTN_RIGHT));
     case Button::Up:
       // Side buttons remain fixed for Up/Down.
       return (gpio.*fn)(HalGPIO::BTN_UP);

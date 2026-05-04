@@ -6,6 +6,7 @@
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
 #include "home/FileBrowserActivity.h"
+#include "home/GamesActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
@@ -169,6 +170,8 @@ void ActivityManager::goToFileTransfer() {
 
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
+void ActivityManager::goToGames() { replaceActivity(std::make_unique<GamesActivity>(renderer, mappedInput)); }
+
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
@@ -264,14 +267,14 @@ void ActivityManager::requestUpdateAndWait() {
   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 }
 
+void ActivityManager::requestUpdateAndWaitConsumingPending() {
+  requestedUpdate = false;
+  requestUpdateAndWait();
+}
+
 // RenderLock
 
 RenderLock::RenderLock() {
-  xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
-  isLocked = true;
-}
-
-RenderLock::RenderLock([[maybe_unused]] Activity&) {
   xSemaphoreTake(activityManager.renderingMutex, portMAX_DELAY);
   isLocked = true;
 }

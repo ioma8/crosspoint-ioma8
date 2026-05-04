@@ -130,7 +130,7 @@ void ClearCacheActivity::loop() {
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       LOG_DBG("CLEAR_CACHE", "User confirmed, starting cache clear");
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         state = CLEARING;
       }
       requestUpdateAndWait();

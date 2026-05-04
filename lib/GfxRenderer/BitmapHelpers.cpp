@@ -114,6 +114,10 @@ void createBmpHeader(BmpHeader* bmpHeader, int width, int height) {
   // Zero out the memory to ensure no garbage data if called on uninitialized stack memory
   std::memset(bmpHeader, 0, sizeof(BmpHeader));
 
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
   uint32_t rowSize = (width + 31) / 32 * 4;
   uint32_t imageSize = rowSize * height;
   uint32_t fileSize = sizeof(BmpHeader) + imageSize;

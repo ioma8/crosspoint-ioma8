@@ -3,6 +3,10 @@
 #include <Logging.h>
 #include <Serialization.h>
 
+namespace {
+constexpr uint16_t MAX_PAGE_ELEMENTS = 512;
+}
+
 void PageLine::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
   block->render(renderer, fontId, xPos + xOffset, yPos + yOffset);
 }
@@ -22,6 +26,10 @@ std::unique_ptr<PageLine> PageLine::deserialize(FsFile& file) {
   serialization::readPod(file, yPos);
 
   auto tb = TextBlock::deserialize(file);
+  if (!tb) {
+    LOG_ERR("PGE", "Deserialization failed: invalid text block");
+    return nullptr;
+  }
   return std::unique_ptr<PageLine>(new PageLine(std::move(tb), xPos, yPos));
 }
 
@@ -45,6 +53,10 @@ std::unique_ptr<PageImage> PageImage::deserialize(FsFile& file) {
   serialization::readPod(file, yPos);
 
   auto ib = ImageBlock::deserialize(file);
+  if (!ib) {
+    LOG_ERR("PGE", "Deserialization failed: invalid image block");
+    return nullptr;
+  }
   return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos));
 }
 
@@ -87,6 +99,10 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
 
   uint16_t count;
   serialization::readPod(file, count);
+  if (count > MAX_PAGE_ELEMENTS) {
+    LOG_ERR("PGE", "Invalid page element count %u", count);
+    return nullptr;
+  }
 
   for (uint16_t i = 0; i < count; i++) {
     uint8_t tag;
@@ -94,9 +110,15 @@ std::unique_ptr<Page> Page::deserialize(FsFile& file) {
 
     if (tag == TAG_PageLine) {
       auto pl = PageLine::deserialize(file);
+      if (!pl) {
+        return nullptr;
+      }
       page->elements.push_back(std::move(pl));
     } else if (tag == TAG_PageImage) {
       auto pi = PageImage::deserialize(file);
+      if (!pi) {
+        return nullptr;
+      }
       page->elements.push_back(std::move(pi));
     } else {
       LOG_ERR("PGE", "Deserialization failed: Unknown tag %u", tag);

@@ -6,16 +6,24 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <memory>
+#include <new>
 #include <string_view>
 
 namespace {
 
-// Stack-allocated string buffer to avoid heap reallocations during parsing
-// Provides string-like interface with fixed capacity
+// Heap-backed fixed-capacity string buffer. Parsing keeps stable storage without
+// putting multiple 1 KiB scratch arrays on the task stack.
 struct StackBuffer {
   static constexpr size_t CAPACITY = 1024;
-  char data[CAPACITY];
+  std::unique_ptr<char[]> data;
   size_t len = 0;
+
+  StackBuffer() : data(new (std::nothrow) char[CAPACITY]) {}
+  StackBuffer(const StackBuffer&) = delete;
+  StackBuffer& operator=(const StackBuffer&) = delete;
+
+  bool valid() const { return data != nullptr; }
 
   void push_back(char c) {
     if (len < CAPACITY - 1) {
@@ -28,10 +36,10 @@ struct StackBuffer {
   size_t size() const { return len; }
 
   // Get string view of current content (zero-copy)
-  std::string_view view() const { return std::string_view(data, len); }
+  std::string_view view() const { return std::string_view(data.get(), len); }
 
   // Convert to string for passing to functions (single allocation)
-  std::string str() const { return std::string(data, len); }
+  std::string str() const { return std::string(data.get(), len); }
 };
 
 // Buffer size for reading CSS files
@@ -127,6 +135,7 @@ void CssParser::normalizedInto(const std::string& s, std::string& out) {
 
 std::vector<std::string> CssParser::splitOnChar(const std::string& s, const char delimiter) {
   std::vector<std::string> parts;
+  parts.reserve(std::count(s.begin(), s.end(), delimiter) + 1);
   size_t start = 0;
 
   for (size_t i = 0; i <= s.size(); ++i) {
@@ -144,6 +153,7 @@ std::vector<std::string> CssParser::splitOnChar(const std::string& s, const char
 
 std::vector<std::string> CssParser::splitWhitespace(const std::string& s) {
   std::vector<std::string> parts;
+  parts.reserve(std::count_if(s.begin(), s.end(), [](const char c) { return isCssWhitespace(c); }) + 1);
   size_t start = 0;
   bool inWord = false;
 
@@ -468,9 +478,12 @@ bool CssParser::loadFromStream(FsFile& source) {
 
   size_t totalRead = 0;
 
-  // Use stack-allocated buffers for parsing to avoid heap reallocations
   StackBuffer selector;
   StackBuffer declBuffer;
+  if (!selector.valid() || !declBuffer.valid()) {
+    LOG_ERR("CSS", "Failed to allocate CSS parse buffers");
+    return false;
+  }
   // Keep these as std::string since they're passed by reference to parseDeclarationIntoStyle
   std::string propNameBuf;
   std::string propValueBuf;
@@ -557,15 +570,19 @@ bool CssParser::loadFromStream(FsFile& source) {
     }
   };
 
-  char buffer[READ_BUFFER_SIZE];
+  std::unique_ptr<char[]> buffer(new (std::nothrow) char[READ_BUFFER_SIZE]);
+  if (!buffer) {
+    LOG_ERR("CSS", "Failed to allocate CSS read buffer");
+    return false;
+  }
   while (source.available()) {
-    int bytesRead = source.read(buffer, sizeof(buffer));
+    int bytesRead = source.read(buffer.get(), READ_BUFFER_SIZE);
     if (bytesRead <= 0) break;
 
     totalRead += static_cast<size_t>(bytesRead);
 
     for (int i = 0; i < bytesRead; ++i) {
-      const char c = buffer[i];
+      const char c = buffer[static_cast<size_t>(i)];
 
       if (inComment) {
         if (prevStar && c == '/') {

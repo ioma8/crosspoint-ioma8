@@ -3,12 +3,19 @@
 #include <FsHelpers.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <Serialization.h>
+
+#include <memory>
+#include <new>
+
+namespace {
+constexpr size_t TXT_COPY_BUFFER_SIZE = 1024;
+}
 
 Txt::Txt(std::string path, std::string cacheBasePath)
     : filepath(std::move(path)), cacheBasePath(std::move(cacheBasePath)) {
   // Generate cache path from file path hash
-  const size_t hash = std::hash<std::string>{}(filepath);
-  cachePath = this->cacheBasePath + "/txt_" + std::to_string(hash);
+  cachePath = this->cacheBasePath + "/txt_" + std::to_string(serialization::fnvHash64(filepath));
 }
 
 bool Txt::load() {
@@ -102,10 +109,16 @@ bool Txt::generateCoverBmp() const {
       src.close();
       return false;
     }
-    uint8_t buffer[1024];
+    std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[TXT_COPY_BUFFER_SIZE]);
+    if (!buffer) {
+      src.close();
+      dst.close();
+      LOG_ERR("TXT", "Failed to allocate cover copy buffer");
+      return false;
+    }
     while (src.available()) {
-      size_t bytesRead = src.read(buffer, sizeof(buffer));
-      dst.write(buffer, bytesRead);
+      size_t bytesRead = src.read(buffer.get(), TXT_COPY_BUFFER_SIZE);
+      dst.write(buffer.get(), bytesRead);
     }
     src.close();
     dst.close();

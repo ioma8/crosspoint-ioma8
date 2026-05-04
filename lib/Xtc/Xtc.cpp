@@ -11,6 +11,15 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <memory>
+#include <new>
+
+namespace {
+
+constexpr size_t XTC_COPY_BUFFER_SIZE = 512;
+
+}  // namespace
+
 bool Xtc::load() {
   LOG_DBG("XTC", "Loading XTC: %s", filepath.c_str());
 
@@ -280,6 +289,11 @@ std::string Xtc::getThumbBmpPath() const { return cachePath + "/thumb_[HEIGHT].b
 std::string Xtc::getThumbBmpPath(int height) const { return cachePath + "/thumb_" + std::to_string(height) + ".bmp"; }
 
 bool Xtc::generateThumbBmp(int height) const {
+  if (height <= 0) {
+    LOG_ERR("XTC", "Invalid thumb height: %d", height);
+    return false;
+  }
+
   // Already generated
   if (Storage.exists(getThumbBmpPath(height).c_str())) {
     return true;
@@ -325,10 +339,16 @@ bool Xtc::generateThumbBmp(int height) const {
       FsFile src, dst;
       if (Storage.openFileForRead("XTC", getCoverBmpPath(), src)) {
         if (Storage.openFileForWrite("XTC", getThumbBmpPath(height), dst)) {
-          uint8_t buffer[512];
+          std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[XTC_COPY_BUFFER_SIZE]);
+          if (!buffer) {
+            LOG_ERR("XTC", "Failed to allocate thumb copy buffer");
+            dst.close();
+            src.close();
+            return false;
+          }
           while (src.available()) {
-            size_t bytesRead = src.read(buffer, sizeof(buffer));
-            dst.write(buffer, bytesRead);
+            size_t bytesRead = src.read(buffer.get(), XTC_COPY_BUFFER_SIZE);
+            dst.write(buffer.get(), bytesRead);
           }
           dst.close();
         }

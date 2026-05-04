@@ -15,6 +15,8 @@
 
 class Pdf {
  public:
+  using OpenProgressCallback = void (*)(void* context);
+
   Pdf() = default;
   ~Pdf();
   Pdf(Pdf&& o) noexcept;
@@ -23,7 +25,7 @@ class Pdf {
   Pdf(const Pdf&) = delete;
   Pdf& operator=(const Pdf&) = delete;
 
-  bool open(const char* path);
+  bool open(const char* path, OpenProgressCallback progressCallback = nullptr, void* progressContext = nullptr);
   void close();
 
   uint32_t pageCount() const { return valid_ ? pages_ : 0; }
@@ -46,7 +48,7 @@ class Pdf {
   };
 
  private:
-  bool parseFromSource(bool needsOutlines);
+  bool parseFromSource(bool needsOutlines, OpenProgressCallback progressCallback, void* progressContext);
   bool ensureXrefReady();
   void releaseXref();
   bool computeSourceSignature(SourceSignature& outSignature);

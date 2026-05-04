@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <WiFi.h>
 #include <esp_sntp.h>
+#include <esp_task_wdt.h>
 
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
@@ -14,6 +15,8 @@
 #include "fontIds.h"
 
 namespace {
+void resetWatchdog() { esp_task_wdt_reset(); }
+
 void syncTimeWithNTP() {
   // Stop SNTP if already running (can't reconfigure while running)
   if (esp_sntp_enabled()) {
@@ -29,9 +32,11 @@ void syncTimeWithNTP() {
   int retry = 0;
   const int maxRetries = 50;  // 5 seconds max
   while (sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED && retry < maxRetries) {
+    resetWatchdog();
     vTaskDelay(100 / portTICK_PERIOD_MS);
     retry++;
   }
+  resetWatchdog();
 
   if (retry < maxRetries) {
     LOG_DBG("KOSync", "NTP time synced");
@@ -63,7 +68,7 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   LOG_DBG("KOSync", "WiFi connected, starting sync");
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = SYNCING;
     statusMessage = tr(STR_SYNCING_TIME);
   }
@@ -73,7 +78,7 @@ void KOReaderSyncActivity::onWifiSelectionComplete(const bool success) {
   syncTimeWithNTP();
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     statusMessage = tr(STR_CALC_HASH);
   }
   requestUpdate(true);
@@ -90,7 +95,7 @@ void KOReaderSyncActivity::performSync() {
   }
   if (documentHash.empty()) {
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = SYNC_FAILED;
       statusMessage = tr(STR_HASH_FAILED);
     }
@@ -101,18 +106,20 @@ void KOReaderSyncActivity::performSync() {
   LOG_DBG("KOSync", "Document hash: %s", documentHash.c_str());
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     statusMessage = tr(STR_FETCH_PROGRESS);
   }
   requestUpdateAndWait();
 
   // Fetch remote progress
+  resetWatchdog();
   const auto result = KOReaderSyncClient::getProgress(documentHash, remoteProgress);
+  resetWatchdog();
 
   if (result == KOReaderSyncClient::NOT_FOUND) {
     // No remote progress - offer to upload
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = NO_REMOTE_PROGRESS;
       hasRemoteProgress = false;
     }
@@ -122,7 +129,7 @@ void KOReaderSyncActivity::performSync() {
 
   if (result != KOReaderSyncClient::OK) {
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = SYNC_FAILED;
       statusMessage = KOReaderSyncClient::errorString(result);
     }
@@ -140,7 +147,7 @@ void KOReaderSyncActivity::performSync() {
   localProgress = ProgressMapper::toKOReader(epub, localPos);
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = SHOWING_RESULT;
 
     // Default to the option that corresponds to the furthest progress
@@ -155,7 +162,7 @@ void KOReaderSyncActivity::performSync() {
 
 void KOReaderSyncActivity::performUpload() {
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = UPLOADING;
     statusMessage = tr(STR_UPLOAD_PROGRESS);
   }
@@ -170,12 +177,14 @@ void KOReaderSyncActivity::performUpload() {
   progress.progress = koPos.xpath;
   progress.percentage = koPos.percentage;
 
+  resetWatchdog();
   const auto result = KOReaderSyncClient::updateProgress(progress);
+  resetWatchdog();
 
   if (result != KOReaderSyncClient::OK) {
     wifiOff();
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = SYNC_FAILED;
       statusMessage = KOReaderSyncClient::errorString(result);
     }
@@ -185,7 +194,7 @@ void KOReaderSyncActivity::performUpload() {
 
   wifiOff();
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = UPLOAD_COMPLETE;
   }
   requestUpdate(true);
@@ -346,14 +355,16 @@ void KOReaderSyncActivity::loop() {
   }
 
   if (state == SHOWING_RESULT) {
+    constexpr int optionCount = 2;
+
     // Navigate options
     if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
         mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-      selectedOption = (selectedOption + 1) % 2;  // Wrap around among 2 options
+      selectedOption = (selectedOption + optionCount - 1) % optionCount;
       requestUpdate();
     } else if (mappedInput.wasReleased(MappedInputManager::Button::Down) ||
                mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-      selectedOption = (selectedOption + 1) % 2;  // Wrap around among 2 options
+      selectedOption = (selectedOption + 1) % optionCount;
       requestUpdate();
     }
 

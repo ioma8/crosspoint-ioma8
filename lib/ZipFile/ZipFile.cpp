@@ -5,6 +5,10 @@
 #include <Logging.h>
 
 #include <algorithm>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <new>
 
 struct ZipInflateCtx {
   InflateReader reader;
@@ -17,6 +21,13 @@ struct ZipInflateCtx {
 namespace {
 constexpr uint16_t ZIP_METHOD_STORED = 0;
 constexpr uint16_t ZIP_METHOD_DEFLATED = 8;
+constexpr uint32_t MAX_MEMORY_FILE_SIZE = 8U * 1024U * 1024U;
+constexpr size_t ZIP_ITEM_NAME_BUFFER_SIZE = 256;
+
+template <typename T>
+bool readExact(FsFile& file, T& value) {
+  return file.read(&value, sizeof(T)) == sizeof(T);
+}
 
 int zipReadCallback(uzlib_uncomp* uncomp) {
   auto* ctx = static_cast<ZipInflateCtx*>(uncomp->user_context);
@@ -51,32 +62,38 @@ bool ZipFile::loadAllFileStatSlims() {
   file.seek(zipDetails.centralDirOffset);
 
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return false;
+  }
   fileStatSlimCache.clear();
   fileStatSlimCache.reserve(zipDetails.totalEntries);
 
   while (file.available()) {
-    file.read(&sig, 4);
+    if (!readExact(file, sig)) break;
     if (sig != 0x02014b50) break;  // End of list
 
     FileStatSlim fileStat = {};
 
     file.seekCur(6);
-    file.read(&fileStat.method, 2);
+    if (!readExact(file, fileStat.method)) break;
     file.seekCur(8);
-    file.read(&fileStat.compressedSize, 4);
-    file.read(&fileStat.uncompressedSize, 4);
-    uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
+    if (!readExact(file, fileStat.compressedSize)) break;
+    if (!readExact(file, fileStat.uncompressedSize)) break;
+    uint16_t nameLen = 0;
+    uint16_t m = 0;
+    uint16_t k = 0;
+    if (!readExact(file, nameLen) || !readExact(file, m) || !readExact(file, k)) break;
     file.seekCur(8);
-    file.read(&fileStat.localHeaderOffset, 4);
+    if (!readExact(file, fileStat.localHeaderOffset)) break;
 
-    if (nameLen < sizeof(itemName)) {
-      file.read(itemName, nameLen);
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
-      fileStatSlimCache.emplace(itemName, fileStat);
+      fileStatSlimCache.emplace(itemName.get(), fileStat);
     } else {
       // Skip over oversized entry names to avoid writing past fixed buffer.
       file.seekCur(nameLen);
@@ -126,7 +143,13 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
   file.seek(startPos);
 
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return false;
+  }
 
   while (true) {
     uint32_t entryStart = file.position();
@@ -148,22 +171,22 @@ bool ZipFile::loadFileStatSlim(const char* filename, FileStatSlim* fileStat) {
     }
 
     file.seekCur(6);
-    file.read(&fileStat->method, 2);
+    if (!readExact(file, fileStat->method)) break;
     file.seekCur(8);
-    file.read(&fileStat->compressedSize, 4);
-    file.read(&fileStat->uncompressedSize, 4);
-    uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
+    if (!readExact(file, fileStat->compressedSize)) break;
+    if (!readExact(file, fileStat->uncompressedSize)) break;
+    uint16_t nameLen = 0;
+    uint16_t m = 0;
+    uint16_t k = 0;
+    if (!readExact(file, nameLen) || !readExact(file, m) || !readExact(file, k)) break;
     file.seekCur(8);
-    file.read(&fileStat->localHeaderOffset, 4);
+    if (!readExact(file, fileStat->localHeaderOffset)) break;
 
-    if (nameLen < 256) {
-      file.read(itemName, nameLen);
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
 
-      if (strcmp(itemName, filename) == 0) {
+      if (strcmp(itemName.get(), filename) == 0) {
         // Found it! Update cursor to next entry
         file.seekCur(m + k);
         lastCentralDirPos = file.position();
@@ -251,13 +274,22 @@ bool ZipFile::loadZipDetails() {
   }
 
   file.seek(fileSize - scanRange);
-  file.read(buffer, scanRange);
+  if (file.read(buffer, scanRange) != static_cast<size_t>(scanRange)) {
+    LOG_ERR("ZIP", "Failed to read EOCD scan buffer");
+    free(buffer);
+    if (!wasOpen) {
+      close();
+    }
+    return false;
+  }
 
   // Scan backwards for the signature
   int foundOffset = -1;
   for (int i = scanRange - 22; i >= 0; i--) {
     constexpr uint32_t signature = 0x06054b50;
-    if (*reinterpret_cast<uint32_t*>(&buffer[i]) == signature) {
+    uint32_t sig = 0;
+    std::memcpy(&sig, &buffer[i], sizeof(sig));
+    if (sig == signature) {
       foundOffset = i;
       break;
     }
@@ -276,8 +308,8 @@ bool ZipFile::loadZipDetails() {
   // Relative positions within EOCD:
   // Offset 10: Total number of entries (2 bytes)
   // Offset 16: Offset of start of central directory with respect to the starting disk number (4 bytes)
-  zipDetails.totalEntries = *reinterpret_cast<uint16_t*>(&buffer[foundOffset + 10]);
-  zipDetails.centralDirOffset = *reinterpret_cast<uint32_t*>(&buffer[foundOffset + 16]);
+  std::memcpy(&zipDetails.totalEntries, &buffer[foundOffset + 10], sizeof(zipDetails.totalEntries));
+  std::memcpy(&zipDetails.centralDirOffset, &buffer[foundOffset + 16], sizeof(zipDetails.centralDirOffset));
   zipDetails.isSet = true;
 
   free(buffer);
@@ -335,32 +367,38 @@ int ZipFile::fillUncompressedSizes(std::vector<SizeTarget>& targets, std::vector
   int matched = 0;
   const int targetCount = static_cast<int>(targets.size());
   uint32_t sig;
-  char itemName[256];
+  std::unique_ptr<char[]> itemName(new (std::nothrow) char[ZIP_ITEM_NAME_BUFFER_SIZE]);
+  if (!itemName) {
+    if (!wasOpen) {
+      close();
+    }
+    return 0;
+  }
 
   while (file.available()) {
-    file.read(&sig, 4);
+    if (!readExact(file, sig)) break;
     if (sig != 0x02014b50) break;
 
     file.seekCur(6);
-    uint16_t method;
-    file.read(&method, 2);
+    uint16_t method = 0;
+    if (!readExact(file, method)) break;
     file.seekCur(8);
-    uint32_t compressedSize, uncompressedSize;
-    file.read(&compressedSize, 4);
-    file.read(&uncompressedSize, 4);
-    uint16_t nameLen, m, k;
-    file.read(&nameLen, 2);
-    file.read(&m, 2);
-    file.read(&k, 2);
+    uint32_t compressedSize = 0;
+    uint32_t uncompressedSize = 0;
+    if (!readExact(file, compressedSize) || !readExact(file, uncompressedSize)) break;
+    uint16_t nameLen = 0;
+    uint16_t m = 0;
+    uint16_t k = 0;
+    if (!readExact(file, nameLen) || !readExact(file, m) || !readExact(file, k)) break;
     file.seekCur(8);
-    uint32_t localHeaderOffset;
-    file.read(&localHeaderOffset, 4);
+    uint32_t localHeaderOffset = 0;
+    if (!readExact(file, localHeaderOffset)) break;
 
-    if (nameLen < 256) {
-      file.read(itemName, nameLen);
+    if (nameLen < ZIP_ITEM_NAME_BUFFER_SIZE) {
+      if (file.read(itemName.get(), nameLen) != nameLen) break;
       itemName[nameLen] = '\0';
 
-      uint64_t hash = fnvHash64(itemName, nameLen);
+      uint64_t hash = fnvHash64(itemName.get(), nameLen);
       SizeTarget key = {hash, nameLen, 0};
 
       auto it = std::lower_bound(targets.begin(), targets.end(), key, [](const SizeTarget& a, const SizeTarget& b) {
@@ -418,6 +456,14 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
+  if (inflatedDataSize > MAX_MEMORY_FILE_SIZE ||
+      (trailingNullByte && inflatedDataSize == std::numeric_limits<uint32_t>::max())) {
+    LOG_ERR("ZIP", "Refusing oversized memory read: %u bytes", inflatedDataSize);
+    if (!wasOpen) {
+      close();
+    }
+    return nullptr;
+  }
   const auto dataSize = trailingNullByte ? inflatedDataSize + 1 : inflatedDataSize;
   const auto data = static_cast<uint8_t*>(malloc(dataSize));
   if (data == nullptr) {
@@ -447,6 +493,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     const auto deflatedData = static_cast<uint8_t*>(malloc(deflatedDataSize));
     if (deflatedData == nullptr) {
       LOG_ERR("ZIP", "Failed to allocate memory for decompression buffer");
+      free(data);
       if (!wasOpen) {
         close();
       }
@@ -459,7 +506,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
     }
 
     if (dataRead != deflatedDataSize) {
-      LOG_ERR("ZIP", "Failed to read data, expected %d got %d", deflatedDataSize, dataRead);
+      LOG_ERR("ZIP", "Failed to read data, expected %u got %zu", deflatedDataSize, dataRead);
       free(deflatedData);
       free(data);
       return nullptr;
@@ -543,7 +590,14 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
         return false;
       }
 
-      out.write(buffer, dataRead);
+      if (out.write(buffer, dataRead) != dataRead) {
+        LOG_ERR("ZIP", "Failed to write all stored bytes to stream");
+        free(buffer);
+        if (!wasOpen) {
+          close();
+        }
+        return false;
+      }
       remaining -= dataRead;
     }
 

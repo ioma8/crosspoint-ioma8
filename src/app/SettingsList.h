@@ -84,21 +84,21 @@ inline const std::vector<SettingInfo>& getSettingsList() {
       // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
       SettingInfo::DynamicString(
           StrId::STR_KOREADER_USERNAME, [] { return KOREADER_STORE.getUsername(); },
-          [](const std::string& v) {
+          [](const char* v) {
             KOREADER_STORE.setCredentials(v, KOREADER_STORE.getPassword());
             KOREADER_STORE.saveToFile();
           },
           "koUsername", StrId::STR_KOREADER_SYNC),
       SettingInfo::DynamicString(
           StrId::STR_KOREADER_PASSWORD, [] { return KOREADER_STORE.getPassword(); },
-          [](const std::string& v) {
+          [](const char* v) {
             KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), v);
             KOREADER_STORE.saveToFile();
           },
           "koPassword", StrId::STR_KOREADER_SYNC),
       SettingInfo::DynamicString(
           StrId::STR_SYNC_SERVER_URL, [] { return KOREADER_STORE.getServerUrl(); },
-          [](const std::string& v) {
+          [](const char* v) {
             KOREADER_STORE.setServerUrl(v);
             KOREADER_STORE.saveToFile();
           },

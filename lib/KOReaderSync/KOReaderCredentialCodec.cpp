@@ -30,8 +30,10 @@ bool decodeKOReaderCredentials(const char* json, KOReaderCredentialData& data, b
   bool ok = false;
   data.password = obfuscation::deobfuscateFromBase64(doc["password_obf"] | "", &ok);
   if (!ok || data.password.empty()) {
-    data.password = doc["password"] | std::string("");
-    if (!data.password.empty() && needsResave) *needsResave = true;
+    if (doc["password"].is<const char*>()) {
+      LOG_ERR("KRS", "Plaintext KOReader password field is not accepted");
+    }
+    data.password.clear();
   }
   data.serverUrl = doc["serverUrl"] | std::string("");
   const uint8_t method = doc["matchMethod"] | static_cast<uint8_t>(DocumentMatchMethod::FILENAME);

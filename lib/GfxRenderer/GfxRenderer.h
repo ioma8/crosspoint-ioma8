@@ -40,12 +40,16 @@ class GfxRenderer {
   bool fadingFix;
   uint8_t* frameBuffer = nullptr;
   uint8_t* bwBufferChunks[BW_BUFFER_NUM_CHUNKS] = {nullptr};
+  bool bwBufferSingleAlloc = false;
   std::map<int, EpdFontFamily> fontMap;
 
   // Last-used font cache — avoids a std::map binary search on every glyph call
   // when consecutive calls share the same fontId (the common case during rendering).
   mutable int cachedFontId = -1;
   mutable const EpdFontFamily* cachedFont = nullptr;
+  // Fallback font used when a requested font is not in the map (e.g. slim builds
+  // that omit some font families). Set via setDefaultFontId(). -1 = no fallback.
+  int defaultFontId_ = -1;
 
   // Mutable because drawText() is const but needs to delegate scan-mode
   // recording to the (non-const) FontCacheManager. Same pragmatic compromise
@@ -79,6 +83,9 @@ class GfxRenderer {
   void setFontCacheManager(FontCacheManager* m) { fontCacheManager_ = m; }
   FontCacheManager* getFontCacheManager() const { return fontCacheManager_; }
   const std::map<int, EpdFontFamily>& getFontMap() const { return fontMap; }
+  /// Set a fallback font used when findFont() can't locate the requested ID.
+  /// Must be called after insertFont so the fallback itself is findable.
+  void setDefaultFontId(int fontId) { defaultFontId_ = fontId; }
 
   // Orientation control (affects logical width/height and coordinate transforms)
   void setOrientation(const Orientation o) { orientation = o; }
@@ -154,8 +161,8 @@ class GfxRenderer {
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
   void displayGrayBuffer() const;
-  bool storeBwBuffer();    // Returns true if buffer was stored successfully
-  void restoreBwBuffer();  // Restore and free the stored buffer
+  [[nodiscard]] bool storeBwBuffer();  // Returns true if buffer was stored successfully
+  void restoreBwBuffer();              // Restore and free the stored buffer
   void cleanupGrayscaleWithFrameBuffer() const;
 
   // Font helpers

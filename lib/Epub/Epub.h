@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <Serialization.h>
+
 #include "Epub/BookMetadataCache.h"
 #include "Epub/css/CssParser.h"
 
@@ -37,13 +39,16 @@ class Epub {
   void parseCssFiles() const;
 
  public:
+  using LoadProgressCallback = void (*)(void* context);
+
   explicit Epub(std::string filepath, const std::string& cacheDir) : filepath(std::move(filepath)) {
     // create a cache key based on the filepath
-    cachePath = cacheDir + "/epub_" + std::to_string(std::hash<std::string>{}(this->filepath));
+    cachePath = cacheDir + "/epub_" + std::to_string(serialization::fnvHash64(this->filepath));
   }
   ~Epub() = default;
   std::string& getBasePath() { return contentBasePath; }
-  bool load(bool buildIfMissing = true, bool skipLoadingCss = false);
+  bool load(bool buildIfMissing = true, bool skipLoadingCss = false, LoadProgressCallback progressCallback = nullptr,
+            void* progressContext = nullptr);
   bool clearCache() const;
   void setupCacheDir() const;
   const std::string& getCachePath() const;

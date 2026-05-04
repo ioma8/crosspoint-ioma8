@@ -4,6 +4,9 @@
 #include <Logging.h>
 #include <MD5Builder.h>
 
+#include <memory>
+#include <new>
+
 namespace {
 // Extract filename from path (everything after last '/')
 std::string getFilename(const std::string& path) {
@@ -56,7 +59,12 @@ std::string KOReaderDocumentId::calculate(const std::string& filePath) {
   md5.begin();
 
   // Buffer for reading chunks
-  uint8_t buffer[CHUNK_SIZE];
+  std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[CHUNK_SIZE]);
+  if (!buffer) {
+    LOG_DBG("KODoc", "Failed to allocate hash buffer");
+    file.close();
+    return "";
+  }
   size_t totalBytesRead = 0;
 
   // Read from each offset (i = -1 to 10)
@@ -76,10 +84,10 @@ std::string KOReaderDocumentId::calculate(const std::string& filePath) {
 
     // Read up to CHUNK_SIZE bytes
     const size_t bytesToRead = std::min(CHUNK_SIZE, fileSize - offset);
-    const size_t bytesRead = file.read(buffer, bytesToRead);
+    const size_t bytesRead = file.read(buffer.get(), bytesToRead);
 
     if (bytesRead > 0) {
-      md5.add(buffer, bytesRead);
+      md5.add(buffer.get(), bytesRead);
       totalBytesRead += bytesRead;
     }
   }

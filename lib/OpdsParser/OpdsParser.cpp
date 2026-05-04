@@ -4,6 +4,11 @@
 
 #include <cstring>
 
+namespace {
+constexpr size_t MAX_TEXT_BYTES = 4096;
+constexpr size_t MAX_ENTRIES = 256;
+}  // namespace
+
 OpdsParser::OpdsParser() {
   parser = XML_ParserCreate(nullptr);
   if (!parser) {
@@ -67,6 +72,9 @@ size_t OpdsParser::write(const uint8_t* xmlData, const size_t length) {
 }
 
 void OpdsParser::flush() {
+  if (!parser) {
+    return;
+  }
   if (XML_Parse(parser, nullptr, 0, XML_TRUE) != XML_STATUS_OK) {
     errorOccured = true;
     XML_ParserFree(parser);
@@ -176,7 +184,7 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
   // Check for entry end
   if (strcmp(name, "entry") == 0 || strstr(name, ":entry") != nullptr) {
     // Only add entry if it has required fields (title and href)
-    if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty()) {
+    if (!self->currentEntry.title.empty() && !self->currentEntry.href.empty() && self->entries.size() < MAX_ENTRIES) {
       self->entries.push_back(self->currentEntry);
     }
     self->inEntry = false;
@@ -225,6 +233,10 @@ void XMLCALL OpdsParser::characterData(void* userData, const XML_Char* s, const 
 
   // Only accumulate text when in a text element
   if (self->inTitle || self->inAuthorName || self->inId) {
+    if (self->currentText.size() + static_cast<size_t>(len) > MAX_TEXT_BYTES) {
+      self->errorOccured = true;
+      return;
+    }
     self->currentText.append(s, len);
   }
 }

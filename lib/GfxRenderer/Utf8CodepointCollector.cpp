@@ -1,5 +1,7 @@
 #include "Utf8CodepointCollector.h"
 
+#include <algorithm>
+
 namespace {
 
 void appendUtf8(std::string& out, uint32_t cp) {
@@ -25,15 +27,18 @@ void appendUtf8(std::string& out, uint32_t cp) {
 void Utf8CodepointCollector::clear() { count_ = 0; }
 
 bool Utf8CodepointCollector::add(uint32_t codepoint) {
-  for (size_t i = 0; i < count_; ++i) {
-    if (codepoints_[i] == codepoint) {
-      return true;
-    }
+  const auto begin = codepoints_;
+  const auto end = codepoints_ + count_;
+  const auto it = std::lower_bound(begin, end, codepoint);
+  if (it != end && *it == codepoint) {
+    return true;
   }
   if (full()) {
     return false;
   }
-  codepoints_[count_++] = codepoint;
+  std::move_backward(it, end, end + 1);
+  *it = codepoint;
+  count_++;
   return true;
 }
 

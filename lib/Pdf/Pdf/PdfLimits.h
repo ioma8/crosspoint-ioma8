@@ -38,7 +38,7 @@
 #endif
 #else
 #ifndef PDF_OBJECT_BODY_MAX
-#define PDF_OBJECT_BODY_MAX 512
+#define PDF_OBJECT_BODY_MAX 1024
 #endif
 #endif
 

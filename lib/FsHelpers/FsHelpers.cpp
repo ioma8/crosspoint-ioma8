@@ -23,7 +23,7 @@ std::string normalisePath(const std::string& path) {
           if (!components.empty()) {
             components.pop_back();
           }
-        } else {
+        } else if (component != ".") {
           components.push_back(component);
         }
         component.clear();
@@ -34,7 +34,13 @@ std::string normalisePath(const std::string& path) {
   }
 
   if (!component.empty()) {
-    components.push_back(component);
+    if (component == "..") {
+      if (!components.empty()) {
+        components.pop_back();
+      }
+    } else if (component != ".") {
+      components.push_back(component);
+    }
   }
 
   std::string result;

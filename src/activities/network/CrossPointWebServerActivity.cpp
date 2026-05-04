@@ -1,6 +1,5 @@
 #include "CrossPointWebServerActivity.h"
 
-#include <DNSServer.h>
 #include <ESPmDNS.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -27,8 +26,6 @@ constexpr uint8_t AP_MAX_CONNECTIONS = 4;
 constexpr int QR_CODE_WIDTH = 198;
 constexpr int QR_CODE_HEIGHT = 198;
 
-// DNS server for captive portal (redirects all DNS queries to our IP)
-DNSServer* dnsServer = nullptr;
 constexpr uint16_t DNS_PORT = 53;
 }  // namespace
 
@@ -75,8 +72,7 @@ void CrossPointWebServerActivity::onExit() {
   if (dnsServer) {
     LOG_DBG("WEBACT", "Stopping DNS server...");
     dnsServer->stop();
-    delete dnsServer;
-    dnsServer = nullptr;
+    dnsServer.reset();
   }
 
   // Brief wait for LWIP stack to flush pending packets
@@ -226,7 +222,12 @@ void CrossPointWebServerActivity::startAccessPoint() {
 
   // Start DNS server for captive portal behavior
   // This redirects all DNS queries to our IP, making any domain typed resolve to us
-  dnsServer = new DNSServer();
+  dnsServer.reset(new DNSServer());
+  if (!dnsServer) {
+    LOG_ERR("WEBACT", "Failed to allocate DNS server");
+    onGoHome();
+    return;
+  }
   dnsServer->setErrorReplyCode(DNSReplyCode::NoError);
   dnsServer->start(DNS_PORT, "*", apIP);
   LOG_DBG("WEBACT", "DNS server started for captive portal");

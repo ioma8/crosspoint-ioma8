@@ -112,13 +112,14 @@ void EpubReaderMenuActivity::render(RenderLock&&) {
   renderer.drawText(UI_12_FONT_ID, titleX, 15 + contentY, truncTitle.c_str(), true, EpdFontFamily::BOLD);
 
   // Progress summary
-  std::string progressLine;
+  char progressLine[96];
   if (totalPages > 0) {
-    progressLine = std::string(tr(STR_CHAPTER_PREFIX)) + std::to_string(currentPage) + "/" +
-                   std::to_string(totalPages) + std::string(tr(STR_PAGES_SEPARATOR));
+    snprintf(progressLine, sizeof(progressLine), "%s%d/%d%s%s%d%%", tr(STR_CHAPTER_PREFIX), currentPage, totalPages,
+             tr(STR_PAGES_SEPARATOR), tr(STR_BOOK_PREFIX), bookProgressPercent);
+  } else {
+    snprintf(progressLine, sizeof(progressLine), "%s%d%%", tr(STR_BOOK_PREFIX), bookProgressPercent);
   }
-  progressLine += std::string(tr(STR_BOOK_PREFIX)) + std::to_string(bookProgressPercent) + "%";
-  renderer.drawCenteredText(UI_10_FONT_ID, 45, progressLine.c_str());
+  renderer.drawCenteredText(UI_10_FONT_ID, 45, progressLine);
 
   // Menu Items
   const int startY = 75 + contentY;

@@ -96,7 +96,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
       .buffer_size = 8192,
       .buffer_size_tx = 8192,
       .user_data = &response,
-      .skip_cert_common_name_check = true,
+      .skip_cert_common_name_check = false,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };
@@ -202,7 +202,7 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate() {
        */
       .buffer_size = 8192,
       .buffer_size_tx = 8192,
-      .skip_cert_common_name_check = true,
+      .skip_cert_common_name_check = false,
       .crt_bundle_attach = esp_crt_bundle_attach,
       .keep_alive_enable = true,
   };

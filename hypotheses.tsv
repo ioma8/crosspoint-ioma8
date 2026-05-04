@@ -23,3 +23,6 @@ Device crash at 0x42057244 is stack overflow in ContentStream::updateCurrentCidM
 Moving remaining ContentStream/Pdf object-body scratch buffers to scoped heap fixes the remaining ActivityManager stack overflow path	proven
 InflateReader-owned uzlib_uncomp on caller stack is enough to overflow ActivityManager stack during PDF flate decode	proven
 Moving uzlib_uncomp from InflateReader stack storage to scoped heap storage preserves parsing and removes the large decompressor state from caller stack	proven
+The home-screen Loading popup is caused by HomeActivity synchronously generating missing recent-book thumbnails from EPUB/XTC files after the first render	proven
+Persisted recent-book metadata already provides enough information for HomeActivity to render immediately without generating thumbnails on entry	proven
+Deferring missing home-thumbnail generation until after the first visible EPUB/XTC page render preserves instant Home entry while still backfilling thumbnails on book open	proven

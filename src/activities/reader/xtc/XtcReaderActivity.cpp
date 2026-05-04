@@ -10,6 +10,7 @@
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <freertos/task.h>
 
 #include "PageProgressStore.h"
 #include "XtcReaderChapterSelectionActivity.h"
@@ -23,6 +24,29 @@
 
 namespace {
 constexpr unsigned long skipPageMs = 700;
+constexpr uint32_t THUMB_TASK_STACK_SIZE = 12288;
+
+void generateXtcThumbTask(void* param) {
+  std::unique_ptr<XtcThumbTaskContext> ctx(static_cast<XtcThumbTaskContext*>(param));
+  vTaskDelay(pdMS_TO_TICKS(10));
+
+  // ctx is guaranteed non-null (caller checks before creating the task).
+  if (ctx->xtc) {
+    const std::string thumbPath = ctx->xtc->getThumbBmpPath(ctx->coverHeight);
+    if (!Storage.exists(thumbPath.c_str())) {
+      LOG_DBG("XTR", "Generating missing home thumb in background: %s", thumbPath.c_str());
+      ctx->xtc->generateThumbBmp(ctx->coverHeight);
+    }
+  }
+
+  if (ctx->taskHandle) {
+    *ctx->taskHandle = nullptr;
+  }
+  if (ctx->contextSlot) {
+    *ctx->contextSlot = nullptr;
+  }
+  vTaskDelete(nullptr);
+}
 }  // namespace
 
 void XtcReaderActivity::onEnter() {
@@ -41,6 +65,8 @@ void XtcReaderActivity::onEnter() {
   APP_STATE.openEpubPath = xtc->getPath();
   APP_STATE.saveToFile();
   RECENT_BOOKS.addBook(xtc->getPath(), xtc->getTitle(), xtc->getAuthor(), xtc->getThumbBmpPath());
+  thumbGenerationPending = true;
+  thumbGenerationArmed = false;
 
   // Trigger first update
   requestUpdate();
@@ -50,6 +76,9 @@ void XtcReaderActivity::onExit() {
   Activity::onExit();
 
   ReaderUtils::resetReaderSession();
+  thumbGenerationPending = false;
+  thumbGenerationArmed = false;
+  cancelHomeThumbGeneration();
   xtc.reset();
 }
 
@@ -58,7 +87,7 @@ void XtcReaderActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (xtc && xtc->hasChapters() && !xtc->getChapters().empty()) {
       startActivityForResult(
-          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc, currentPage),
+          std::make_unique<XtcReaderChapterSelectionActivity>(renderer, mappedInput, xtc.get(), currentPage),
           [this](const ActivityResult& result) {
             if (!result.isCancelled) {
               currentPage = std::get<PageResult>(result.data).page;
@@ -120,6 +149,54 @@ void XtcReaderActivity::render(RenderLock&&) {
 
   renderPage();
   saveProgress();
+
+  if (thumbGenerationPending && !thumbGenerationArmed) {
+    thumbGenerationArmed = true;
+    requestUpdate();
+  } else if (thumbGenerationPending) {
+    maybeScheduleHomeThumbGeneration();
+  }
+}
+
+void XtcReaderActivity::maybeScheduleHomeThumbGeneration() {
+  if (!thumbGenerationPending || !thumbGenerationArmed || !xtc) {
+    return;
+  }
+
+  thumbGenerationPending = false;
+  thumbGenerationArmed = false;
+
+  const int coverHeight = UITheme::getInstance().getMetrics().homeCoverHeight;
+  const std::string thumbPath = xtc->getThumbBmpPath(coverHeight);
+  if (Storage.exists(thumbPath.c_str())) {
+    return;
+  }
+
+  thumbTaskContext =
+      new (std::nothrow) XtcThumbTaskContext{xtc.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
+  if (!thumbTaskContext) {
+    LOG_ERR("XTR", "Failed to allocate thumb task context");
+    return;
+  }
+
+  if (xTaskCreate(&generateXtcThumbTask, "XtcThumb", THUMB_TASK_STACK_SIZE, thumbTaskContext, 1, &thumbTaskHandle) !=
+      pdPASS) {
+    LOG_ERR("XTR", "Failed to create XTC thumb task");
+    delete thumbTaskContext;
+    thumbTaskHandle = nullptr;
+    thumbTaskContext = nullptr;
+    return;
+  }
+}
+
+void XtcReaderActivity::cancelHomeThumbGeneration() {
+  if (thumbTaskHandle) {
+    vTaskDelete(thumbTaskHandle);
+    thumbTaskHandle = nullptr;
+  }
+
+  delete thumbTaskContext;
+  thumbTaskContext = nullptr;
 }
 
 void XtcReaderActivity::renderPage() {

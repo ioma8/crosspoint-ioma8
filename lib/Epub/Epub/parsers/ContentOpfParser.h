@@ -40,7 +40,10 @@ class ContentOpfParser final : public Print {
   std::vector<ItemIndexEntry> itemIndex;
   bool useItemIndex = false;
 
-  static constexpr uint16_t LARGE_SPINE_THRESHOLD = 400;
+  // Always build the fast hash index — the memory cost (~12 bytes per manifest item)
+  // is negligible even for small EPUBs, and the linear scan slow path could take
+  // 200ms per spine item for modest manifests (see TODO in ContentOpfParser.cpp).
+  static constexpr uint16_t LARGE_SPINE_THRESHOLD = 0;
 
   // FNV-1a hash function
   static uint32_t fnvHash(const std::string& s) {

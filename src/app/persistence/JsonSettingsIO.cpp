@@ -75,6 +75,9 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
 
   String json;
   serializeJson(doc, json);
+  if (Storage.exists(path) && Storage.readFile(path) == json) {
+    return true;
+  }
   return Storage.writeFile(path, json);
 }
 
@@ -123,6 +126,9 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
 
   String json;
   serializeJson(doc, json);
+  if (Storage.exists(path) && Storage.readFile(path) == json) {
+    return true;
+  }
   return Storage.writeFile(path, json);
 }
 

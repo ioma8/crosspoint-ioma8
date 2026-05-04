@@ -3,7 +3,14 @@
 #include <HalStorage.h>
 #include <Logging.h>
 
+#include <memory>
+#include <new>
+
 namespace ReaderBookmarkStore {
+namespace {
+constexpr size_t MAX_BOOKMARK_FILE_BYTES = 16 * 1024;
+constexpr size_t BOOKMARK_READ_CHUNK_BYTES = 256;
+}
 
 std::string bookmarkPath(const std::string& cachePath) { return cachePath + "/bookmarks.txt"; }
 
@@ -14,14 +21,27 @@ bool load(const std::string& cachePath, std::vector<ReaderBookmark>& bookmarks) 
     return true;
   }
 
+  const size_t fileSize = file.size();
+  if (fileSize > MAX_BOOKMARK_FILE_BYTES) {
+    LOG_ERR("BKM", "Bookmark file too large: %u", static_cast<unsigned>(fileSize));
+    file.close();
+    return false;
+  }
+
   std::string data;
-  data.reserve(file.size());
+  data.reserve(fileSize);
+  std::unique_ptr<uint8_t[]> buffer(new (std::nothrow) uint8_t[BOOKMARK_READ_CHUNK_BYTES]);
+  if (!buffer) {
+    LOG_ERR("BKM", "Failed to allocate bookmark read buffer");
+    file.close();
+    return false;
+  }
   while (file.available()) {
-    const int ch = file.read();
-    if (ch < 0) {
+    const size_t bytesRead = file.read(buffer.get(), BOOKMARK_READ_CHUNK_BYTES);
+    if (bytesRead == 0) {
       break;
     }
-    data.push_back(static_cast<char>(ch));
+    data.append(reinterpret_cast<const char*>(buffer.get()), bytesRead);
   }
   file.close();
 

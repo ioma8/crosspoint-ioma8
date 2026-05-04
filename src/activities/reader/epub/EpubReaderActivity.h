@@ -2,13 +2,21 @@
 #include <Epub.h>
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
+#include <freertos/task.h>
 
 #include "EpubReaderMenuActivity.h"
 #include "ReaderBookmarkCodec.h"
 #include "activities/Activity.h"
 
+struct EpubThumbTaskContext {
+  Epub* epub;
+  int coverHeight;
+  TaskHandle_t* taskHandle;
+  EpubThumbTaskContext** contextSlot;
+};
+
 class EpubReaderActivity final : public Activity {
-  std::shared_ptr<Epub> epub;
+  std::unique_ptr<Epub> epub;
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
@@ -26,15 +34,19 @@ class EpubReaderActivity final : public Activity {
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;
-  bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
   bool automaticPageTurnActive = false;
   bool bookmarkChordActive = false;
+  bool thumbGenerationPending = false;
+  bool thumbGenerationArmed = false;
+  TaskHandle_t thumbTaskHandle = nullptr;
+  EpubThumbTaskContext* thumbTaskContext = nullptr;
   uint8_t fontPrewarmSuppressPages = 0;
   int lastSavedSpineIndex = -1;
   int lastSavedPage = -1;
   int pageLoadRetrySpineIndex = -1;
   int pageLoadRetryPage = -1;
   bool pageLoadRetryUsed = false;
+  bool pageTurnLongPressArmed = false;
   std::vector<ReaderBookmark> bookmarks;
 
   // Footnote support
@@ -66,6 +78,8 @@ class EpubReaderActivity final : public Activity {
   uint8_t getCurrentBookProgressPercent() const;
   std::string getCurrentPageSnippet();
   void drawBookmarkIndicatorIfNeeded();
+  void maybeScheduleHomeThumbGeneration();
+  void cancelHomeThumbGeneration();
 
   // Footnote navigation
   void navigateToHref(const std::string& href, bool savePosition = false);

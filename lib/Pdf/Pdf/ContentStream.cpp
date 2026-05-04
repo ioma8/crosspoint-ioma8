@@ -367,8 +367,23 @@ class ToUnicodeWorkspaceUse {
 };
 
 template <typename T>
-std::unique_ptr<T> makeContentScratch() {
-  return std::unique_ptr<T>(new (std::nothrow) T());
+struct MallocScratchDeleter {
+  void operator()(T* ptr) const {
+    if (!ptr) {
+      return;
+    }
+    ptr->~T();
+    std::free(ptr);
+  }
+};
+
+template <typename T>
+std::unique_ptr<T, MallocScratchDeleter<T>> makeContentScratch() {
+  void* mem = std::malloc(sizeof(T));
+  if (!mem) {
+    return nullptr;
+  }
+  return std::unique_ptr<T, MallocScratchDeleter<T>>(new (mem) T());
 }
 
 [[gnu::noinline]] static bool loadToUnicodeMapForFont(FsFile& file, const XrefTable& xref, uint32_t fontObjId,
@@ -760,22 +775,24 @@ int popOperandsForOperator(std::string_view op) {
 
 float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)); }
 
-[[gnu::noinline]] std::string resolveResourcesDict(FsFile& file, const XrefTable& xref, std::string_view pageBody) {
+[[gnu::noinline]] bool resolveResourcesDict(FsFile& file, const XrefTable& xref, std::string_view pageBody,
+                                            PdfFixedString<PDF_OBJECT_BODY_MAX>& out) {
+  out.clear();
   PdfFixedString<PDF_DICT_VALUE_MAX> r;
   auto body = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
   if (!body) {
-    return {};
+    return false;
   }
   std::string_view currentBody = pageBody;
   for (int depth = 0; depth < 16; ++depth) {
     if (PdfObject::getDictValue("/Resources", currentBody, r)) {
       while (!r.empty() && (r[0] == ' ' || r[0] == '\t' || r[0] == '\r' || r[0] == '\n')) r.erase_prefix(1);
-      if (r.empty()) return {};
-      if (r.size() >= 2 && r[0] == '<' && r[1] == '<') return std::string(r.view());
+      if (r.empty()) return false;
+      if (r.size() >= 2 && r[0] == '<' && r[1] == '<') return out.assign(r.view());
       const uint32_t rid = PdfObject::getDictRef("/Resources", currentBody);
-      if (rid == 0) return std::string(r.view());
-      if (!xref.readDictForObject(file, rid, *body)) return std::string(r.view());
-      return std::string(body->view());
+      if (rid == 0) return out.assign(r.view());
+      if (!xref.readDictForObject(file, rid, *body)) return out.assign(r.view());
+      return out.assign(body->view());
     }
 
     const uint32_t parentId = PdfObject::getDictRef("/Parent", currentBody);
@@ -784,31 +801,36 @@ float toFloat(const char* s) { return static_cast<float>(std::strtod(s, nullptr)
     }
     currentBody = body->view();
   }
-  return {};
+  return false;
 }
 
-[[gnu::noinline]] std::string resolveFontDict(FsFile& file, const XrefTable& xref, std::string_view pageBody) {
-  const std::string resBody = resolveResourcesDict(file, xref, pageBody);
+[[gnu::noinline]] bool resolveFontDict(FsFile& file, const XrefTable& xref, std::string_view pageBody,
+                                       PdfFixedString<PDF_OBJECT_BODY_MAX>& out) {
+  out.clear();
+  auto resBody = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  if (!resBody || !resolveResourcesDict(file, xref, pageBody, *resBody)) {
+    return false;
+  }
   PdfFixedString<PDF_DICT_VALUE_MAX> r;
-  if (!PdfObject::getDictValue("/Font", resBody, r)) {
-    return {};
+  if (!PdfObject::getDictValue("/Font", resBody->view(), r)) {
+    return false;
   }
   while (!r.empty() && (r[0] == ' ' || r[0] == '\t' || r[0] == '\r' || r[0] == '\n')) r.erase_prefix(1);
   if (r.empty()) {
-    return {};
+    return false;
   }
   if (r.size() >= 2 && r[0] == '<' && r[1] == '<') {
-    return std::string(r.view());
+    return out.assign(r.view());
   }
-  const uint32_t rid = PdfObject::getDictRef("/Font", resBody);
+  const uint32_t rid = PdfObject::getDictRef("/Font", resBody->view());
   if (rid == 0) {
-    return std::string(r.view());
+    return out.assign(r.view());
   }
   auto body = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
   if (!body || !xref.readDictForObject(file, rid, *body)) {
-    return std::string(r.view());
+    return out.assign(r.view());
   }
-  return std::string(body->view());
+  return out.assign(body->view());
 }
 
 uint32_t resourceObjectIdForName(std::string_view dict, std::string_view name) {
@@ -1540,9 +1562,16 @@ class OpStack {
 
 bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref, std::string_view pageObjectBody,
                          PdfPage& outPage) {
-  const std::string resBody = resolveResourcesDict(file, xref, pageObjectBody);
+  auto resBodyStorage = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  const std::string_view resBody = (resBodyStorage && resolveResourcesDict(file, xref, pageObjectBody, *resBodyStorage))
+                                       ? resBodyStorage->view()
+                                       : std::string_view{};
   const std::string xobjDict = getXObjectDict(resBody);
-  const std::string fontDictBody = resolveFontDict(file, xref, pageObjectBody);
+  auto fontDictBodyStorage = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
+  const std::string_view fontDictBody =
+      (fontDictBodyStorage && resolveFontDict(file, xref, pageObjectBody, *fontDictBodyStorage))
+          ? fontDictBodyStorage->view()
+          : std::string_view{};
   auto fontInfoCacheStorage = makeContentScratch<FontInfoCache<PDF_MAX_FONT_CID_MAPS>>();
   auto uncachedFontInfoStorage = makeContentScratch<FontInfo>();
   auto fontNameCacheStorage = makeContentScratch<NameIdCache<PDF_MAX_OP_STACK>>();
@@ -1551,8 +1580,9 @@ bool runContentOperators(char* p, char* end, FsFile& file, const XrefTable& xref
   auto runsStorage = makeContentScratch<PdfFixedVector<TmpRun, PDF_MAX_TMP_RUNS>>();
   auto opStackStorage = makeContentScratch<OpStack>();
   auto fontBodyScratchStorage = makeContentScratch<PdfFixedString<PDF_OBJECT_BODY_MAX>>();
-  if (!fontInfoCacheStorage || !uncachedFontInfoStorage || !fontNameCacheStorage || !xobjNameCacheStorage ||
-      !ctmStackStorage || !runsStorage || !opStackStorage || !fontBodyScratchStorage) {
+  if (!resBodyStorage || !fontDictBodyStorage || !fontInfoCacheStorage || !uncachedFontInfoStorage ||
+      !fontNameCacheStorage || !xobjNameCacheStorage || !ctmStackStorage || !runsStorage || !opStackStorage ||
+      !fontBodyScratchStorage) {
     return false;
   }
   auto& fontInfoCache = *fontInfoCacheStorage;

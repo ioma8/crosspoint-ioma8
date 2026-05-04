@@ -15,6 +15,14 @@
 #include "util/UrlUtils.h"
 
 namespace {
+class VerifiedNetworkClientSecure final : public NetworkClientSecure {
+ public:
+  VerifiedNetworkClientSecure() {
+    attach_ssl_certificate_bundle(sslclient.get(), true);
+    _use_ca_bundle = true;
+  }
+};
+
 class FileWriteStream final : public Stream {
  public:
   FileWriteStream(FsFile& file, size_t total, HttpDownloader::ProgressCallback progress)
@@ -56,8 +64,7 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
   // Use NetworkClientSecure for HTTPS, regular NetworkClient for HTTP
   std::unique_ptr<NetworkClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new NetworkClientSecure();
-    secureClient->setInsecure();
+    auto* secureClient = new VerifiedNetworkClientSecure();
     client.reset(secureClient);
   } else {
     client.reset(new NetworkClient());
@@ -84,7 +91,12 @@ bool HttpDownloader::fetchUrl(const std::string& url, Stream& outContent) {
     return false;
   }
 
-  http.writeToStream(&outContent);
+  const int writeResult = http.writeToStream(&outContent);
+  if (writeResult < 0) {
+    LOG_ERR("HTTP", "writeToStream error: %d", writeResult);
+    http.end();
+    return false;
+  }
 
   http.end();
 
@@ -106,8 +118,7 @@ HttpDownloader::DownloadError HttpDownloader::downloadToFile(const std::string& 
   // Use NetworkClientSecure for HTTPS, regular NetworkClient for HTTP
   std::unique_ptr<NetworkClient> client;
   if (UrlUtils::isHttpsUrl(url)) {
-    auto* secureClient = new NetworkClientSecure();
-    secureClient->setInsecure();
+    auto* secureClient = new VerifiedNetworkClientSecure();
     client.reset(secureClient);
   } else {
     client.reset(new NetworkClient());

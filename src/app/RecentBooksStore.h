@@ -8,7 +8,9 @@ struct RecentBook {
   std::string author;
   std::string coverBmpPath;
 
-  bool operator==(const RecentBook& other) const { return path == other.path; }
+  bool operator==(const RecentBook& other) const {
+    return path == other.path && title == other.title && author == other.author && coverBmpPath == other.coverBmpPath;
+  }
 };
 
 class RecentBooksStore;

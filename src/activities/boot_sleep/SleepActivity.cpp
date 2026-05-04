@@ -47,7 +47,7 @@ void SleepActivity::renderCustomSleepScreen() const {
 
   if (sleepDir) {
     std::vector<std::string> files;
-    char name[500];
+    static char name[500];
     // collect all valid BMP files
     for (auto file = dir.openNextFile(); file; file = dir.openNextFile()) {
       if (file.isDirectory()) {

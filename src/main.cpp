@@ -24,6 +24,7 @@
 #include "app/RecentBooksStore.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BootTiming.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
 
@@ -124,6 +125,75 @@ EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
+namespace {
+constexpr size_t SERIAL_COMMAND_BUFFER_SIZE = 32;
+
+bool commandEquals(const char* cmd, const char* expected) {
+  while (*cmd == ' ' || *cmd == '\t') {
+    cmd++;
+  }
+
+  size_t len = strlen(cmd);
+  while (len > 0 && (cmd[len - 1] == ' ' || cmd[len - 1] == '\t')) {
+    len--;
+  }
+
+  return strlen(expected) == len && strncmp(cmd, expected, len) == 0;
+}
+
+void handleSerialCommand(const char* line) {
+  if (strncmp(line, "CMD:", 4) != 0) {
+    return;
+  }
+
+  const char* cmd = line + 4;
+  if (commandEquals(cmd, "SCREENSHOT")) {
+    logSerial.printf("SCREENSHOT_START:%d\n", HalDisplay::BUFFER_SIZE);
+    uint8_t* buf = display.getFrameBuffer();
+    logSerial.write(buf, HalDisplay::BUFFER_SIZE);
+    logSerial.printf("SCREENSHOT_END\n");
+  }
+}
+
+void processSerialCommands() {
+  static char serialCommandBuffer[SERIAL_COMMAND_BUFFER_SIZE] = {};
+  static size_t serialCommandLength = 0;
+  static bool droppingSerialCommand = false;
+
+  while (logSerial.available() > 0) {
+    const int value = logSerial.read();
+    if (value < 0) {
+      break;
+    }
+
+    const char ch = static_cast<char>(value);
+    if (ch == '\r') {
+      continue;
+    }
+    if (ch == '\n') {
+      if (!droppingSerialCommand) {
+        serialCommandBuffer[serialCommandLength] = '\0';
+        handleSerialCommand(serialCommandBuffer);
+      }
+      serialCommandLength = 0;
+      droppingSerialCommand = false;
+      continue;
+    }
+    if (droppingSerialCommand) {
+      continue;
+    }
+    if (serialCommandLength >= SERIAL_COMMAND_BUFFER_SIZE - 1) {
+      LOG_ERR("MAIN", "Serial command too long; dropping line");
+      serialCommandLength = 0;
+      droppingSerialCommand = true;
+      continue;
+    }
+
+    serialCommandBuffer[serialCommandLength++] = ch;
+  }
+}
+}  // namespace
+
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
 unsigned long t2 = 0;
@@ -143,8 +213,8 @@ void verifyPowerButtonDuration() {
   // Subtract the current time, because inputManager only starts counting the HeldTime from the first update()
   // This way, we remove the time we already took to reach here from the duration,
   // assuming the button was held until now from millis()==0 (i.e. device start time).
-  const uint16_t calibration = start;
-  const uint16_t calibratedPressDuration =
+  const unsigned long calibration = start;
+  const unsigned long calibratedPressDuration =
       (calibration < SETTINGS.getPowerButtonDuration()) ? SETTINGS.getPowerButtonDuration() - calibration : 1;
 
   gpio.update();
@@ -225,24 +295,40 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  // Fallback font for slim builds (OMIT_FONTS) — when the requested font family
+  // isn't compiled in, the renderer uses Bookerly 14 instead of drawing nothing.
+  renderer.setDefaultFontId(BOOKERLY_14_FONT_ID);
   LOG_DBG("MAIN", "Fonts setup");
 }
 
 void setup() {
   t1 = millis();
+  bootTimingReset(t1);
 
   HalSystem::begin();
+  bootTimingMark("HalSystem::begin");
   gpio.begin();
+  bootTimingMark("gpio.begin");
   powerManager.begin();
+  bootTimingMark("powerManager.begin");
+  const auto wakeupReason = gpio.getWakeupReason();
 
   // Only start serial if USB connected
   if (gpio.isUsbConnected()) {
     Serial.begin(115200);
+#if defined(CROSSPOINT_DEBUG_BUILD) || defined(ENABLE_BOOT_TIMING)
     // Wait up to 3 seconds for Serial to be ready to catch early logs
     unsigned long start = millis();
     while (!Serial && (millis() - start) < 3000) {
       delay(10);
     }
+#endif
+  }
+  bootTimingMark("serial setup");
+
+  if (wakeupReason == HalGPIO::WakeupReason::AfterUSBPower) {
+    LOG_DBG("MAIN", "Wakeup reason: After USB Power");
+    powerManager.startDeepSleep(gpio);
   }
 
   // SD Card Initialization
@@ -253,29 +339,29 @@ void setup() {
     activityManager.goToFullScreenMessage("SD card error", EpdFontFamily::BOLD);
     return;
   }
+  bootTimingMark("Storage.begin");
 
   HalSystem::checkPanic();
   HalSystem::clearPanic();  // TODO: move this to an activity when we have one to display the panic info
+  bootTimingMark("panic check");
 
   SETTINGS.loadFromFile();
+  bootTimingMark("SETTINGS.loadFromFile");
   I18N.loadSettings();
-  KOREADER_STORE.loadFromFile();
+  bootTimingMark("I18N.loadSettings");
   UITheme::getInstance().reload();
+  bootTimingMark("UITheme::reload");
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
-  switch (gpio.getWakeupReason()) {
+  switch (wakeupReason) {
     case HalGPIO::WakeupReason::PowerButton:
       // For normal wakeups, verify power button press duration
       LOG_DBG("MAIN", "Verifying power button press duration");
       verifyPowerButtonDuration();
       break;
-    case HalGPIO::WakeupReason::AfterUSBPower:
-      // If USB power caused a cold boot, go back to sleep
-      LOG_DBG("MAIN", "Wakeup reason: After USB Power");
-      powerManager.startDeepSleep(gpio);
-      break;
     case HalGPIO::WakeupReason::AfterFlash:
       // After flashing, just proceed to boot
+    case HalGPIO::WakeupReason::AfterUSBPower:
     case HalGPIO::WakeupReason::Other:
     default:
       break;
@@ -284,29 +370,41 @@ void setup() {
   // First serial output only here to avoid timing inconsistencies for power button press duration verification
   LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
 
-  setupDisplayAndFonts();
-
-  activityManager.goToBoot();
-
   APP_STATE.loadFromFile();
+  bootTimingMark("APP_STATE.loadFromFile");
   RECENT_BOOKS.loadFromFile();
+  bootTimingMark("RECENT_BOOKS.loadFromFile");
 
   // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
   // crashed (indicated by readerActivityLoadCount > 0)
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+  const bool bootToHome = APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+                          mappedInputManager.isPressed(MappedInputManager::Button::Back) ||
+                          APP_STATE.readerActivityLoadCount > 0;
+
+  setupDisplayAndFonts();
+  bootTimingMark("setupDisplayAndFonts");
+
+  if (bootToHome) {
     activityManager.goHome();
+    bootTimingMark("activityManager.goHome");
+    activityManager.requestUpdateAndWaitConsumingPending();
+    bootTimingMark("first Home render");
   } else {
+    activityManager.goToBoot();
+    bootTimingMark("activityManager.goToBoot");
+
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
     APP_STATE.openEpubPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path);
+    bootTimingMark("activityManager.goToReader");
   }
 
   // Ensure we're not still holding the power button before leaving setup
   waitForPowerRelease();
+  bootTimingMark("waitForPowerRelease");
 }
 
 void loop() {
@@ -328,19 +426,7 @@ void loop() {
 
   // Handle incoming serial commands,
   // nb: we use logSerial from logging to avoid deprecation warnings
-  if (logSerial.available() > 0) {
-    String line = logSerial.readStringUntil('\n');
-    if (line.startsWith("CMD:")) {
-      String cmd = line.substring(4);
-      cmd.trim();
-      if (cmd == "SCREENSHOT") {
-        logSerial.printf("SCREENSHOT_START:%d\n", HalDisplay::BUFFER_SIZE);
-        uint8_t* buf = display.getFrameBuffer();
-        logSerial.write(buf, HalDisplay::BUFFER_SIZE);
-        logSerial.printf("SCREENSHOT_END\n");
-      }
-    }
-  }
+  processSerialCommands();
 
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
@@ -350,7 +436,7 @@ void loop() {
   }
 
   static bool screenshotButtonsReleased = true;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (gpio.isPressed(HalGPIO::BTN_POWER) && mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
       {
@@ -373,7 +459,7 @@ void loop() {
 
   if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.getHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't sleep
-    if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    if (mappedInputManager.isPressed(MappedInputManager::Button::Down)) {
       return;
     }
     enterDeepSleep();
