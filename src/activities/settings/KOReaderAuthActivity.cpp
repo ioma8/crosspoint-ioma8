@@ -14,7 +14,7 @@
 void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
   if (!success) {
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = FAILED;
       errorMessage = tr(STR_WIFI_CONN_FAILED);
     }
@@ -23,7 +23,7 @@ void KOReaderAuthActivity::onWifiSelectionComplete(const bool success) {
   }
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = AUTHENTICATING;
     statusMessage = tr(STR_AUTHENTICATING);
   }
@@ -36,7 +36,7 @@ void KOReaderAuthActivity::performAuthentication() {
   const auto result = KOReaderSyncClient::authenticate();
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     if (result == KOReaderSyncClient::OK) {
       state = SUCCESS;
       statusMessage = tr(STR_AUTH_SUCCESS);

@@ -65,7 +65,7 @@ void ButtonRemapActivity::loop() {
   {
     // Make sure UI done rendering before accepting another assignment.
     // This avoids rapid double-presses that can advance the step without a visible redraw.
-    RenderLock lock(*this);
+    RenderLock lock;
 
     // Wait for a front button press to assign to the current role.
     const int pressedButton = mappedInput.getPressedFrontButton();

@@ -1,10 +1,10 @@
 #include "Game2048Activity.h"
 
 #include <Arduino.h>
+#include <I18n.h>
 #include <esp_system.h>
 
 #include "GfxRenderer.h"
-#include <I18n.h>
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -104,12 +104,7 @@ void Game2048Activity::resetGame() {
 }
 
 bool Game2048Activity::spawnTile() {
-  int emptyCount = 0;
-  for (uint16_t value : board) {
-    if (value == 0) {
-      emptyCount++;
-    }
-  }
+  const int emptyCount = static_cast<int>(std::count_if(board.begin(), board.end(), [](uint16_t v) { return v == 0; }));
   if (emptyCount == 0) {
     return false;
   }
@@ -147,12 +142,7 @@ bool Game2048Activity::canMove() const {
 }
 
 bool Game2048Activity::hasWonTile() const {
-  for (uint16_t value : board) {
-    if (value >= 2048) {
-      return true;
-    }
-  }
-  return false;
+  return std::any_of(board.begin(), board.end(), [](uint16_t v) { return v >= 2048; });
 }
 
 bool Game2048Activity::performMove(const MoveDirection direction) {
@@ -268,8 +258,8 @@ void Game2048Activity::drawBoard() const {
 
   renderer.drawCenteredText(UI_12_FONT_ID, TOP_MARGIN, "2048", true, EpdFontFamily::BOLD);
   renderer.drawText(UI_10_FONT_ID, BOARD_MARGIN, TOP_MARGIN + 34, scoreBuffer, true, EpdFontFamily::BOLD);
-  renderer.drawText(UI_10_FONT_ID, screenWidth - BOARD_MARGIN - renderer.getTextWidth(UI_10_FONT_ID, bestBuffer,
-                                                                                      EpdFontFamily::BOLD),
+  renderer.drawText(UI_10_FONT_ID,
+                    screenWidth - BOARD_MARGIN - renderer.getTextWidth(UI_10_FONT_ID, bestBuffer, EpdFontFamily::BOLD),
                     TOP_MARGIN + 34, bestBuffer, true, EpdFontFamily::BOLD);
 
   const char* statusLine = "Swipe with arrows";
@@ -336,10 +326,6 @@ void Game2048Activity::drawTile(const int x, const int y, const int size, const 
   const int textY = y + (size - renderer.getLineHeight(fontId)) / 2 + 4;
   const bool blackText = fill != Color::Black;
   renderer.drawText(fontId, textX, textY, tileText, blackText, style);
-}
-
-int Game2048Activity::tileShade(const uint16_t value) {
-  return tileShadeForValue(value);
 }
 
 int Game2048Activity::tileFontId(const uint16_t value) {

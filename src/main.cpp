@@ -295,6 +295,9 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  // Fallback font for slim builds (OMIT_FONTS) — when the requested font family
+  // isn't compiled in, the renderer uses Bookerly 14 instead of drawing nothing.
+  renderer.setDefaultFontId(BOOKERLY_14_FONT_ID);
   LOG_DBG("MAIN", "Fonts setup");
 }
 

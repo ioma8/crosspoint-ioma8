@@ -64,7 +64,7 @@ bool BookMetadataCache::beginTocPass() {
     for (int i = 0; i < spineCount; i++) {
       auto entry = readSpineEntry(spineFile);
       SpineHrefIndexEntry idx;
-      idx.hrefHash = fnvHash64(entry.href);
+      idx.hrefHash = serialization::fnvHash64(entry.href);
       idx.hrefLen = static_cast<uint16_t>(entry.href.size());
       idx.spineIndex = static_cast<int16_t>(i);
       spineHrefIndex.push_back(idx);
@@ -350,7 +350,7 @@ void BookMetadataCache::createTocEntry(const std::string& title, const std::stri
   int16_t spineIndex = -1;
 
   if (useSpineHrefIndex) {
-    uint64_t targetHash = fnvHash64(href);
+    uint64_t targetHash = serialization::fnvHash64(href);
     uint16_t targetLen = static_cast<uint16_t>(href.size());
 
     auto it =

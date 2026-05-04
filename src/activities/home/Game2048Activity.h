@@ -37,6 +37,5 @@ class Game2048Activity final : public Activity {
 
   void drawBoard() const;
   void drawTile(int x, int y, int size, uint16_t value) const;
-  static int tileShade(uint16_t value);
   static int tileFontId(uint16_t value);
 };

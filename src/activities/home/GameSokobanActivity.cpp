@@ -1,10 +1,11 @@
 #include "GameSokobanActivity.h"
-#include "GameSokobanLevels.h"
 
 #include <Arduino.h>
-
 #include <I18n.h>
 
+#include <algorithm>
+
+#include "GameSokobanLevels.h"
 #include "GfxRenderer.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -172,12 +173,7 @@ bool GameSokobanActivity::tryMove(const MoveDirection direction) {
 }
 
 bool GameSokobanActivity::isSolved() const {
-  for (Tile tile : board) {
-    if (tile == Tile::Box) {
-      return false;
-    }
-  }
-  return true;
+  return std::none_of(board.begin(), board.end(), [](Tile t) { return t == Tile::Box; });
 }
 
 int GameSokobanActivity::findPlayer() const {
@@ -214,9 +210,8 @@ void GameSokobanActivity::drawBoard() const {
 
   const int availableWidth = screenWidth - BOARD_MARGIN * 2;
   const int availableHeight = screenHeight - HUD_HEIGHT - BOARD_MARGIN * 2;
-  const int cellSize =
-      std::min((availableWidth - CELL_GAP * (levelWidth + 1)) / levelWidth,
-               (availableHeight - CELL_GAP * (levelHeight + 1)) / levelHeight);
+  const int cellSize = std::min((availableWidth - CELL_GAP * (levelWidth + 1)) / levelWidth,
+                                (availableHeight - CELL_GAP * (levelHeight + 1)) / levelHeight);
   const int boardWidthPx = levelWidth * cellSize + (levelWidth + 1) * CELL_GAP;
   const int boardHeightPx = levelHeight * cellSize + (levelHeight + 1) * CELL_GAP;
   const int boardX = (screenWidth - boardWidthPx) / 2;
@@ -240,10 +235,12 @@ void GameSokobanActivity::drawBoard() const {
     const int overlayY = boardY + (boardHeightPx - overlayHeight) / 2;
     renderer.fillRoundedRect(overlayX, overlayY, overlayWidth, overlayHeight, 8, Color::White);
     renderer.drawRoundedRect(overlayX, overlayY, overlayWidth, overlayHeight, 2, 8, true);
-    renderer.drawCenteredText(UI_12_FONT_ID, overlayY + 18, state == State::CompletedAll ? "All Levels Clear" : "Level Clear",
-                              true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, overlayY + 52,
-                              state == State::CompletedAll ? "Confirm restarts at level 1" : "Confirm loads next level");
+    renderer.drawCenteredText(UI_12_FONT_ID, overlayY + 18,
+                              state == State::CompletedAll ? "All Levels Clear" : "Level Clear", true,
+                              EpdFontFamily::BOLD);
+    renderer.drawCenteredText(
+        UI_10_FONT_ID, overlayY + 52,
+        state == State::CompletedAll ? "Confirm restarts at level 1" : "Confirm loads next level");
     renderer.drawCenteredText(UI_10_FONT_ID, overlayY + 74, "Back returns to Games");
   }
 
@@ -298,8 +295,8 @@ void GameSokobanActivity::drawTile(const int x, const int y, const int size, con
         renderer.fillRoundedRect(torsoX, torsoY, torsoWidth, torsoHeight, 4, Color::Black);
         renderer.fillRect(torsoX + torsoWidth / 4, torsoY + 3, torsoWidth / 2, std::max(3, torsoHeight / 3), false);
         renderer.drawLine(torsoX - 1, shoulderY, torsoX + torsoWidth / 3, shoulderY + std::max(2, size / 10), true);
-        renderer.drawLine(torsoX + torsoWidth, shoulderY, torsoX + torsoWidth * 2 / 3, shoulderY + std::max(2, size / 10),
-                          true);
+        renderer.drawLine(torsoX + torsoWidth, shoulderY, torsoX + torsoWidth * 2 / 3,
+                          shoulderY + std::max(2, size / 10), true);
         renderer.drawLine(x + size / 2 - 1, torsoY + torsoHeight - 1, leftLegX, footY, true);
         renderer.drawLine(x + size / 2 + 1, torsoY + torsoHeight - 1, rightLegX, footY, true);
       }

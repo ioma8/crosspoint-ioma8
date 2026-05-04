@@ -20,7 +20,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   LOG_DBG("OTA", "WiFi connected, checking for update");
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = CHECKING_FOR_UPDATE;
   }
   requestUpdateAndWait();
@@ -29,7 +29,7 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = FAILED;
     }
     return;
@@ -38,14 +38,14 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
   if (!updater.isUpdateNewer()) {
     LOG_DBG("OTA", "No new update available");
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       state = NO_UPDATE;
     }
     return;
   }
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     state = WAITING_CONFIRMATION;
   }
 }
@@ -147,7 +147,7 @@ void OtaUpdateActivity::loop() {
     if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       LOG_DBG("OTA", "New update available, starting download...");
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         state = UPDATE_IN_PROGRESS;
       }
       requestUpdateAndWait();
@@ -156,7 +156,7 @@ void OtaUpdateActivity::loop() {
       if (res != OtaUpdater::OK) {
         LOG_DBG("OTA", "Update failed: %d", res);
         {
-          RenderLock lock(*this);
+          RenderLock lock;
           state = FAILED;
         }
         requestUpdate();
@@ -164,7 +164,7 @@ void OtaUpdateActivity::loop() {
       }
 
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         state = FINISHED;
       }
       requestUpdate();

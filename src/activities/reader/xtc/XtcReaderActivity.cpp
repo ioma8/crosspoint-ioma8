@@ -30,7 +30,8 @@ void generateXtcThumbTask(void* param) {
   std::unique_ptr<XtcThumbTaskContext> ctx(static_cast<XtcThumbTaskContext*>(param));
   vTaskDelay(pdMS_TO_TICKS(10));
 
-  if (ctx && ctx->xtc) {
+  // ctx is guaranteed non-null (caller checks before creating the task).
+  if (ctx->xtc) {
     const std::string thumbPath = ctx->xtc->getThumbBmpPath(ctx->coverHeight);
     if (!Storage.exists(thumbPath.c_str())) {
       LOG_DBG("XTR", "Generating missing home thumb in background: %s", thumbPath.c_str());
@@ -171,21 +172,21 @@ void XtcReaderActivity::maybeScheduleHomeThumbGeneration() {
     return;
   }
 
-  auto* ctx = new (std::nothrow) XtcThumbTaskContext{xtc.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
-  if (!ctx) {
+  thumbTaskContext =
+      new (std::nothrow) XtcThumbTaskContext{xtc.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
+  if (!thumbTaskContext) {
     LOG_ERR("XTR", "Failed to allocate thumb task context");
     return;
   }
 
-  if (xTaskCreate(&generateXtcThumbTask, "XtcThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &thumbTaskHandle) != pdPASS) {
+  if (xTaskCreate(&generateXtcThumbTask, "XtcThumb", THUMB_TASK_STACK_SIZE, thumbTaskContext, 1, &thumbTaskHandle) !=
+      pdPASS) {
     LOG_ERR("XTR", "Failed to create XTC thumb task");
+    delete thumbTaskContext;
     thumbTaskHandle = nullptr;
     thumbTaskContext = nullptr;
-    delete ctx;
     return;
   }
-
-  thumbTaskContext = ctx;
 }
 
 void XtcReaderActivity::cancelHomeThumbGeneration() {

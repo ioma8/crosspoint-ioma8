@@ -107,6 +107,12 @@ ScopeExit<Fn> makeScopeExit(Fn fn) {
   return ScopeExit<Fn>(fn);
 }
 
+void notifyProgress(Pdf::OpenProgressCallback progressCallback, void* progressContext) {
+  if (progressCallback) {
+    progressCallback(progressContext);
+  }
+}
+
 }  // namespace
 
 Pdf::~Pdf() { close(); }
@@ -157,7 +163,7 @@ bool Pdf::computeSourceSignature(SourceSignature& outSignature) {
   return true;
 }
 
-bool Pdf::parseFromSource(bool needsOutlines) {
+bool Pdf::parseFromSource(bool needsOutlines, OpenProgressCallback progressCallback, void* progressContext) {
   CatalogInfo catalogInfo;
   if (!xref_) {
     xref_.reset(new (std::nothrow) XrefTable());
@@ -169,14 +175,17 @@ bool Pdf::parseFromSource(bool needsOutlines) {
   if (!xref_->parse(file_)) {
     return false;
   }
+  notifyProgress(progressCallback, progressContext);
   xrefReady_ = true;
   XrefTable& xref = *xref_;
   if (!loadCatalogInfo(file_, xref, xref.rootObjId(), catalogInfo)) {
     return false;
   }
+  notifyProgress(progressCallback, progressContext);
   if (!pageTree_.parse(file_, xref, catalogInfo.pagesObjId)) {
     return false;
   }
+  notifyProgress(progressCallback, progressContext);
   cache_.saveXref(xref);
 
   pages_ = pageTree_.pageCount();
@@ -191,6 +200,7 @@ bool Pdf::parseFromSource(bool needsOutlines) {
     outlineEntries_.clear();
     if (catalogInfo.outlinesId != 0) {
       PdfOutlineParser::parse(file_, xref, pageTree_, catalogInfo.outlinesId, catalogInfo.namesObjId, outlineEntries_);
+      notifyProgress(progressCallback, progressContext);
     }
   }
 
@@ -234,7 +244,7 @@ void Pdf::releaseXref() {
   xrefReady_ = false;
 }
 
-bool Pdf::open(const char* path) {
+bool Pdf::open(const char* path, OpenProgressCallback progressCallback, void* progressContext) {
   close();
   if (!path || !path[0]) {
     return false;
@@ -248,6 +258,7 @@ bool Pdf::open(const char* path) {
     pdfLogErrPath("Cannot open: ", path_.c_str());
     return false;
   }
+  notifyProgress(progressCallback, progressContext);
 
   cache_.configure(path_.c_str(), file_.fileSize());
   if (!computeSourceSignature(sourceSignature_)) {
@@ -257,6 +268,7 @@ bool Pdf::open(const char* path) {
     InflateReader::releaseSharedBuffer();
     return false;
   }
+  notifyProgress(progressCallback, progressContext);
 
   uint32_t cachedPageCount = 0;
   uint32_t cachedFileSize = 0;
@@ -277,7 +289,7 @@ bool Pdf::open(const char* path) {
     return true;
   }
 
-  if (!parseFromSource(true)) {
+  if (!parseFromSource(true, progressCallback, progressContext)) {
     pdfLogErrPath("Failed to parse PDF source: ", path_.c_str());
     file_.close();
     PdfScratch::releaseRetainedBuffers();

@@ -46,6 +46,7 @@ class EpubReaderActivity final : public Activity {
   int pageLoadRetrySpineIndex = -1;
   int pageLoadRetryPage = -1;
   bool pageLoadRetryUsed = false;
+  bool pageTurnLongPressArmed = false;
   std::vector<ReaderBookmark> bookmarks;
 
   // Footnote support

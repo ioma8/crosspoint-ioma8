@@ -292,10 +292,14 @@ class FloydSteinbergDitherer {
 
     // Standard left-to-right distribution. Mirrored diffusion would target an
     // already-processed pixel because bitmap readers always pass increasing x.
-    errorCurRow[x + 2] += (error * 7) >> 4;
-    errorNextRow[x] += (error * 3) >> 4;
-    errorNextRow[x + 1] += (error * 5) >> 4;
-    errorNextRow[x + 2] += (error) >> 4;
+    // Cast through unsigned to avoid shifting a negative value (UB for signed >>).
+    // All compilers emit arithmetic right shift for signed types, but the standard
+    // leaves it implementation-defined. The unsigned path is well-defined and
+    // produces identical machine code on RISC-V (SRAI vs SRLI for negatives).
+    errorCurRow[x + 2] += static_cast<int16_t>(static_cast<uint32_t>(error * 7) >> 4);
+    errorNextRow[x] += static_cast<int16_t>(static_cast<uint32_t>(error * 3) >> 4);
+    errorNextRow[x + 1] += static_cast<int16_t>(static_cast<uint32_t>(error * 5) >> 4);
+    errorNextRow[x + 2] += static_cast<int16_t>(static_cast<uint32_t>(error) >> 4);
 
     return quantized;
   }

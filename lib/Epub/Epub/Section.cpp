@@ -10,7 +10,9 @@
 #include "parsers/ChapterHtmlSlimParser.h"
 
 namespace {
-constexpr uint8_t SECTION_FILE_VERSION = 18;
+// Incremented for TextBlock word-widths cache (version 18 → 19). Old caches
+// are rebuilt automatically, gaining the optimized format.
+constexpr uint8_t SECTION_FILE_VERSION = 19;
 constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) + sizeof(bool) + sizeof(uint8_t) +
                                  sizeof(uint16_t) + sizeof(uint16_t) + sizeof(uint16_t) + sizeof(bool) + sizeof(bool) +
                                  sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t);
@@ -113,8 +115,12 @@ bool Section::loadSectionFile(const int fontId, const float lineCompression, con
   }
 
   serialization::readPod(file, pageCount);
+  // Read and cache LUT offset and anchor map offset (saves 2 seeks per page turn).
+  serialization::readPod(file, cachedLutOffset);
+  serialization::readPod(file, cachedAnchorMapOffset);
   file.close();
-  LOG_DBG("SCT", "Deserialization succeeded: %d pages", pageCount);
+  LOG_DBG("SCT", "Deserialization succeeded: %d pages, LUT=%lu, anchors=%lu", pageCount,
+          static_cast<unsigned long>(cachedLutOffset), static_cast<unsigned long>(cachedAnchorMapOffset));
   return true;
 }
 
@@ -257,6 +263,9 @@ bool Section::createSectionFile(const int fontId, const float lineCompression, c
   serialization::writePod(file, pageCount);
   serialization::writePod(file, lutOffset);
   serialization::writePod(file, anchorMapOffset);
+  // Cache offsets so loadPageFromSectionFile() can use them directly.
+  cachedLutOffset = lutOffset;
+  cachedAnchorMapOffset = anchorMapOffset;
   file.close();
   if (cssParser) {
     cssParser->clear();
@@ -280,9 +289,8 @@ std::unique_ptr<Page> Section::loadPageFromSectionFile() {
     file.close();
     return nullptr;
   }
-  file.seek(HEADER_SIZE - sizeof(uint32_t) * 2);
-  uint32_t lutOffset;
-  serialization::readPod(file, lutOffset);
+  // Use cached LUT offset from loadSectionFile() to avoid a seek+read.
+  const uint32_t lutOffset = cachedLutOffset;
   const uint32_t lutEntryOffset = lutOffset + sizeof(uint32_t) * static_cast<uint32_t>(currentPage);
   if (lutOffset < HEADER_SIZE || lutEntryOffset > fileSize - sizeof(uint32_t)) {
     LOG_ERR("SCT", "Invalid LUT offset %lu for page %d", lutOffset, currentPage);
@@ -312,9 +320,7 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   }
 
   const uint32_t fileSize = f.size();
-  f.seek(HEADER_SIZE - sizeof(uint32_t));
-  uint32_t anchorMapOffset;
-  serialization::readPod(f, anchorMapOffset);
+  const uint32_t anchorMapOffset = cachedAnchorMapOffset;
   if (anchorMapOffset == 0 || anchorMapOffset >= fileSize) {
     f.close();
     return std::nullopt;

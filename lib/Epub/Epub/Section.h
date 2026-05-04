@@ -21,6 +21,11 @@ class Section {
                               bool embeddedStyle, uint8_t imageRendering);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
+  // Cached LUT and anchor-map offsets — avoids redundant SD seeks on every
+  // page turn. Populated by loadSectionFile(), consumed by loadPageFromSectionFile().
+  uint32_t cachedLutOffset = 0;
+  uint32_t cachedAnchorMapOffset = 0;
+
  public:
   uint16_t pageCount = 0;
   int currentPage = 0;

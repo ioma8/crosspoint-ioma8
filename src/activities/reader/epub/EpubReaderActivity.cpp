@@ -42,7 +42,8 @@ void generateEpubThumbTask(void* param) {
   std::unique_ptr<EpubThumbTaskContext> ctx(static_cast<EpubThumbTaskContext*>(param));
   vTaskDelay(pdMS_TO_TICKS(10));
 
-  if (ctx && ctx->epub) {
+  // ctx is guaranteed non-null (caller checks before creating the task).
+  if (ctx->epub) {
     const std::string thumbPath = ctx->epub->getThumbBmpPath(ctx->coverHeight);
     if (!Storage.exists(thumbPath.c_str())) {
       LOG_DBG("ERS", "Generating missing home thumb in background: %s", thumbPath.c_str());
@@ -208,8 +209,19 @@ void EpubReaderActivity::loop() {
     return;
   }
 
+  const bool pageTurnButtonHeld = mappedInput.isPressed(MappedInputManager::Button::PageBack) ||
+                                  mappedInput.isPressed(MappedInputManager::Button::PageForward) ||
+                                  mappedInput.isPressed(MappedInputManager::Button::Left) ||
+                                  mappedInput.isPressed(MappedInputManager::Button::Right);
+  if (SETTINGS.longPressChapterSkip && pageTurnButtonHeld && mappedInput.getHeldTime() > skipChapterMs) {
+    pageTurnLongPressArmed = true;
+  }
+
   auto [prevTriggered, nextTriggered] = ReaderUtils::detectPageTurn(mappedInput);
   if (!prevTriggered && !nextTriggered) {
+    if (!pageTurnButtonHeld) {
+      pageTurnLongPressArmed = false;
+    }
     return;
   }
 
@@ -221,13 +233,14 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  const bool skipChapter = SETTINGS.longPressChapterSkip && mappedInput.getHeldTime() > skipChapterMs;
+  const bool skipChapter = SETTINGS.longPressChapterSkip && pageTurnLongPressArmed;
+  pageTurnLongPressArmed = false;
 
   if (skipChapter) {
     lastPageTurnTime = millis();
     // We don't want to delete the section mid-render, so grab the semaphore
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       nextPageNumber = 0;
       currentSpineIndex = nextTriggered ? currentSpineIndex + 1 : currentSpineIndex - 1;
       section.reset();
@@ -304,7 +317,7 @@ void EpubReaderActivity::jumpToPercent(int percent) {
 
   // Reset state so render() reloads and repositions on the target spine.
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     currentSpineIndex = targetSpineIndex;
     nextPageNumber = 0;
     pendingPercentJump = true;
@@ -321,7 +334,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           std::make_unique<EpubReaderChapterSelectionActivity>(renderer, mappedInput, epub.get(), path, spineIdx),
           [this](const ActivityResult& result) {
             if (!result.isCancelled && currentSpineIndex != std::get<ChapterResult>(result.data).spineIndex) {
-              RenderLock lock(*this);
+              RenderLock lock;
               currentSpineIndex = std::get<ChapterResult>(result.data).spineIndex;
               nextPageNumber = 0;
               section.reset();
@@ -394,7 +407,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::DELETE_CACHE: {
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         if (epub && section) {
           uint16_t backupSpine = currentSpineIndex;
           uint16_t backupPage = section->currentPage;
@@ -410,7 +423,7 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
     }
     case EpubReaderMenuActivity::MenuAction::SCREENSHOT: {
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         pendingScreenshot = true;
       }
       requestUpdate();
@@ -421,13 +434,13 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         const int currentPage = section ? section->currentPage : 0;
         const int totalPages = section ? section->pageCount : 0;
         startActivityForResult(
-            std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub.get(), epub->getPath(), currentSpineIndex,
-                                                   currentPage, totalPages),
+            std::make_unique<KOReaderSyncActivity>(renderer, mappedInput, epub.get(), epub->getPath(),
+                                                   currentSpineIndex, currentPage, totalPages),
             [this](const ActivityResult& result) {
               if (!result.isCancelled) {
                 const auto& sync = std::get<SyncResult>(result.data);
                 if (currentSpineIndex != sync.spineIndex || (section && section->currentPage != sync.page)) {
-                  RenderLock lock(*this);
+                  RenderLock lock;
                   currentSpineIndex = sync.spineIndex;
                   nextPageNumber = sync.page;
                   section.reset();
@@ -505,7 +518,7 @@ void EpubReaderActivity::openBookmarkSelection() {
                          [this](const ActivityResult& result) {
                            if (!result.isCancelled) {
                              const auto& bookmark = std::get<BookmarkResult>(result.data);
-                             RenderLock lock(*this);
+                             RenderLock lock;
                              currentSpineIndex = static_cast<int>(bookmark.primary);
                              nextPageNumber = static_cast<int>(bookmark.secondary);
                              section.reset();
@@ -525,7 +538,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
 
   // Preserve current reading position so we can restore after reflow.
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     if (section) {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
@@ -559,7 +572,7 @@ void EpubReaderActivity::toggleAutoPageTurn(const uint8_t selectedPageTurnOption
   // resets cached section so that space is reserved for auto page turn indicator when None or progress bar only
   if (statusBarHeight == 0 || statusBarHeight == UITheme::getInstance().getProgressBarHeight()) {
     // Preserve current reading position so we can restore after reflow.
-    RenderLock lock(*this);
+    RenderLock lock;
     if (section) {
       cachedSpineIndex = currentSpineIndex;
       cachedChapterTotalPageCount = section->pageCount;
@@ -576,7 +589,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     } else {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         nextPageNumber = 0;
         currentSpineIndex++;
         section.reset();
@@ -588,7 +601,7 @@ void EpubReaderActivity::pageTurn(bool isForwardTurn) {
     } else if (currentSpineIndex > 0) {
       // We don't want to delete the section mid-render, so grab the semaphore
       {
-        RenderLock lock(*this);
+        RenderLock lock;
         nextPageNumber = UINT16_MAX;
         currentSpineIndex--;
         section.reset();
@@ -807,20 +820,21 @@ void EpubReaderActivity::maybeScheduleHomeThumbGeneration() {
     return;
   }
 
-  auto* ctx = new (std::nothrow) EpubThumbTaskContext{epub.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
-  if (!ctx) {
+  thumbTaskContext =
+      new (std::nothrow) EpubThumbTaskContext{epub.get(), coverHeight, &thumbTaskHandle, &thumbTaskContext};
+  if (!thumbTaskContext) {
     LOG_ERR("ERS", "Failed to allocate thumb task context");
     return;
   }
 
-  if (xTaskCreate(&generateEpubThumbTask, "EpubThumb", THUMB_TASK_STACK_SIZE, ctx, 1, &thumbTaskHandle) != pdPASS) {
+  if (xTaskCreate(&generateEpubThumbTask, "EpubThumb", THUMB_TASK_STACK_SIZE, thumbTaskContext, 1, &thumbTaskHandle) !=
+      pdPASS) {
     LOG_ERR("ERS", "Failed to create EPUB thumb task");
-    delete ctx;
+    delete thumbTaskContext;
     thumbTaskHandle = nullptr;
     thumbTaskContext = nullptr;
     return;
   }
-  thumbTaskContext = ctx;
 }
 
 void EpubReaderActivity::cancelHomeThumbGeneration() {
@@ -1088,7 +1102,7 @@ void EpubReaderActivity::navigateToHref(const std::string& hrefStr, const bool s
   }
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     pendingAnchor = std::move(anchor);
     currentSpineIndex = targetSpineIndex;
     nextPageNumber = 0;
@@ -1105,7 +1119,7 @@ void EpubReaderActivity::restoreSavedPosition() {
   LOG_DBG("ERS", "Restoring position [%d]: spine %d, page %d", footnoteDepth, pos.spineIndex, pos.pageNumber);
 
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     currentSpineIndex = pos.spineIndex;
     nextPageNumber = pos.pageNumber;
     section.reset();

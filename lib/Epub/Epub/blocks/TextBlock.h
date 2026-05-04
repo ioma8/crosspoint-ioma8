@@ -14,6 +14,11 @@ class TextBlock final : public Block {
  private:
   std::vector<std::string> words;
   std::vector<int16_t> wordXpos;
+  // Cached word widths in pixels — populated during layout so render() doesn't
+  // re-measure widths for underline positioning (avoids redundant getTextWidth calls).
+  // Empty means widths are not cached (legacy cache file); render() falls back to
+  // measuring on demand.
+  std::vector<uint16_t> wordWidths;
   std::vector<EpdFontFamily::Style> wordStyles;
   BlockStyle blockStyle;
 
@@ -22,6 +27,13 @@ class TextBlock final : public Block {
                      std::vector<EpdFontFamily::Style> word_styles, const BlockStyle& blockStyle = BlockStyle())
       : words(std::move(words)),
         wordXpos(std::move(word_xpos)),
+        wordStyles(std::move(word_styles)),
+        blockStyle(blockStyle) {}
+  explicit TextBlock(std::vector<std::string> words, std::vector<int16_t> word_xpos, std::vector<uint16_t> word_widths,
+                     std::vector<EpdFontFamily::Style> word_styles, const BlockStyle& blockStyle = BlockStyle())
+      : words(std::move(words)),
+        wordXpos(std::move(word_xpos)),
+        wordWidths(std::move(word_widths)),
         wordStyles(std::move(word_styles)),
         blockStyle(blockStyle) {}
   ~TextBlock() override = default;

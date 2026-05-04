@@ -16,6 +16,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
     return;
   }
 
+  const bool haveWidths = !wordWidths.empty() && wordWidths.size() == words.size();
+
   for (size_t i = 0; i < words.size(); i++) {
     const int wordX = wordXpos[i] + x;
     const EpdFontFamily::Style currentStyle = wordStyles[i];
@@ -23,7 +25,10 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
 
     if ((currentStyle & EpdFontFamily::UNDERLINE) != 0) {
       const std::string& w = words[i];
-      const int fullWordWidth = renderer.getTextWidth(fontId, w.c_str(), currentStyle);
+      // Use cached width when available to avoid re-measuring all glyph advances.
+      // Cached widths include soft-hyphen stripping, so they match rendered output.
+      const int fullWordWidth =
+          haveWidths ? static_cast<int>(wordWidths[i]) : renderer.getTextWidth(fontId, w.c_str(), currentStyle);
       // y is the top of the text line; add ascender to reach baseline, then offset 2px below
       const int underlineY = y + renderer.getFontAscenderSize(fontId) + 2;
 
@@ -35,7 +40,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
           static_cast<uint8_t>(w[2]) == 0x83) {
         const char* visiblePtr = w.c_str() + 3;
         const int prefixWidth = renderer.getTextAdvanceX(fontId, "\xe2\x80\x83", currentStyle);
-        const int visibleWidth = renderer.getTextWidth(fontId, visiblePtr, currentStyle);
+        const int visibleWidth = haveWidths ? static_cast<int>(wordWidths[i]) - prefixWidth
+                                            : renderer.getTextWidth(fontId, visiblePtr, currentStyle);
         startX = wordX + prefixWidth;
         underlineWidth = visibleWidth;
       }
@@ -52,11 +58,20 @@ bool TextBlock::serialize(FsFile& file) const {
     return false;
   }
 
+  const bool hasWidths = !wordWidths.empty() && wordWidths.size() == words.size();
+
   // Word data
   serialization::writePod(file, static_cast<uint16_t>(words.size()));
   for (const auto& w : words) serialization::writeString(file, w);
   for (auto x : wordXpos) serialization::writePod(file, x);
   for (auto s : wordStyles) serialization::writePod(file, s);
+
+  // Cached word widths (new in section version 19+).
+  // Tag byte: 1 = widths present, 0 = absent (old format, render() falls back).
+  serialization::writePod(file, static_cast<uint8_t>(hasWidths ? 1 : 0));
+  if (hasWidths) {
+    for (auto w : wordWidths) serialization::writePod(file, w);
+  }
 
   // Style (alignment + margins/padding/indent)
   serialization::writePod(file, blockStyle.alignment);
@@ -79,6 +94,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   uint16_t wc;
   std::vector<std::string> words;
   std::vector<int16_t> wordXpos;
+  std::vector<uint16_t> wordWidths;
   std::vector<EpdFontFamily::Style> wordStyles;
   BlockStyle blockStyle;
 
@@ -104,6 +120,15 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   for (auto& x : wordXpos) serialization::readPod(file, x);
   for (auto& s : wordStyles) serialization::readPod(file, s);
 
+  // Cached word widths tag (section version 19+).
+  // If present, read widths; otherwise leave wordWidths empty (fallback in render()).
+  uint8_t hasWidths = 0;
+  serialization::readPod(file, hasWidths);
+  if (hasWidths) {
+    wordWidths.resize(wc);
+    for (auto& w : wordWidths) serialization::readPod(file, w);
+  }
+
   // Style (alignment + margins/padding/indent)
   serialization::readPod(file, blockStyle.alignment);
   serialization::readPod(file, blockStyle.textAlignDefined);
@@ -118,6 +143,10 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(FsFile& file) {
   serialization::readPod(file, blockStyle.textIndent);
   serialization::readPod(file, blockStyle.textIndentDefined);
 
+  if (hasWidths) {
+    return std::unique_ptr<TextBlock>(
+        new TextBlock(std::move(words), std::move(wordXpos), std::move(wordWidths), std::move(wordStyles), blockStyle));
+  }
   return std::unique_ptr<TextBlock>(
       new TextBlock(std::move(words), std::move(wordXpos), std::move(wordStyles), blockStyle));
 }

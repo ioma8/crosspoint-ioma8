@@ -149,7 +149,7 @@ void HomeActivity::freeCoverBuffer() {
 
 void HomeActivity::loop() {
   if (validateRecentsAfterFirstRender) {
-    RenderLock lock(*this);
+    RenderLock lock;
     validateRecentsAfterFirstRender = false;
     const bool changed = validateRecentBookPaths();
     lock.unlock();
@@ -214,8 +214,8 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        "Games", tr(STR_SETTINGS_TITLE)};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER), "Games",
+                                        tr(STR_SETTINGS_TITLE)};
   std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Book, Settings};
 
   if (hasOpdsUrl) {

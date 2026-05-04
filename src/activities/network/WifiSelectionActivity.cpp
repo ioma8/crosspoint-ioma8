@@ -19,7 +19,7 @@ void WifiSelectionActivity::onEnter() {
   // Load saved WiFi credentials - SD card operations need lock as we use SPI
   // for both
   {
-    RenderLock lock(*this);
+    RenderLock lock;
     WIFI_STORE.loadFromFile();
   }
 
@@ -247,7 +247,7 @@ void WifiSelectionActivity::checkConnectionStatus() {
     // Save this as the last connected network - SD card operations need lock as
     // we use SPI for both
     {
-      RenderLock lock(*this);
+      RenderLock lock;
       WIFI_STORE.setLastConnectedSsid(selectedSSID);
     }
 
@@ -323,7 +323,7 @@ void WifiSelectionActivity::loop() {
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       if (savePromptSelection == 0) {
         // User chose "Yes" - save the password
-        RenderLock lock(*this);
+        RenderLock lock;
         WIFI_STORE.addCredential(selectedSSID, enteredPassword);
       }
       // Complete - parent will start web server
@@ -351,7 +351,7 @@ void WifiSelectionActivity::loop() {
       }
     } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
       if (forgetPromptSelection == 1) {
-        RenderLock lock(*this);
+        RenderLock lock;
         // User chose "Forget network" - forget the network
         WIFI_STORE.removeCredential(selectedSSID);
         // Update the network list to reflect the change

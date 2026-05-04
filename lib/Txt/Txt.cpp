@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <JpegToBmpConverter.h>
 #include <Logging.h>
+#include <Serialization.h>
 
 #include <memory>
 #include <new>
@@ -14,8 +15,7 @@ constexpr size_t TXT_COPY_BUFFER_SIZE = 1024;
 Txt::Txt(std::string path, std::string cacheBasePath)
     : filepath(std::move(path)), cacheBasePath(std::move(cacheBasePath)) {
   // Generate cache path from file path hash
-  const size_t hash = std::hash<std::string>{}(filepath);
-  cachePath = this->cacheBasePath + "/txt_" + std::to_string(hash);
+  cachePath = this->cacheBasePath + "/txt_" + std::to_string(serialization::fnvHash64(filepath));
 }
 
 bool Txt::load() {

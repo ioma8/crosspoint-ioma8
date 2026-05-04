@@ -67,16 +67,29 @@ const EpdFontFamily* GfxRenderer::findFont(const int fontId) const {
     return cachedFont;
   }
   const auto it = fontMap.find(fontId);
-  if (it == fontMap.end()) return nullptr;
-  cachedFontId = fontId;
-  cachedFont = &it->second;
-  return cachedFont;
+  if (it != fontMap.end()) {
+    cachedFontId = fontId;
+    cachedFont = &it->second;
+    return cachedFont;
+  }
+  // Font not registered (e.g. slim build): try the configured fallback.
+  if (defaultFontId_ >= 0 && fontId != defaultFontId_) {
+    const auto fb = fontMap.find(defaultFontId_);
+    if (fb != fontMap.end()) {
+      cachedFontId = defaultFontId_;
+      cachedFont = &fb->second;
+      return cachedFont;
+    }
+  }
+  return nullptr;
 }
 
 // Translate logical (x,y) coordinates to physical panel coordinates based on current orientation
-// This should always be inlined for better performance
-static inline void rotateCoordinates(const GfxRenderer::Orientation orientation, const int x, const int y, int* phyX,
-                                     int* phyY) {
+// MUST be inlined — called for every pixel drawn. Under -Os the compiler may
+// ignore a bare `inline` hint; always_inline guarantees the switch collapses
+// against the known compile-time-visible member `orientation`.
+static inline __attribute__((always_inline)) void rotateCoordinates(const GfxRenderer::Orientation orientation,
+                                                                    const int x, const int y, int* phyX, int* phyY) {
   switch (orientation) {
     case GfxRenderer::Portrait: {
       // Logical portrait (480x800) → panel (800x480)
@@ -143,36 +156,80 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
     }
 
     if (is2Bit) {
-      int pixelPosition = 0;
-      for (int glyphY = 0; glyphY < height; glyphY++) {
-        const int outerCoord = outerBase + glyphY;
-        for (int glyphX = 0; glyphX < width; glyphX++, pixelPosition++) {
-          int screenX, screenY;
-          if constexpr (rotation == TextRotation::Rotated90CW) {
-            screenX = outerCoord;
-            screenY = innerBase - glyphX;
-          } else {
-            screenX = innerBase + glyphX;
-            screenY = outerCoord;
+      // Hoist renderMode dispatch above the pixel loop to avoid 3 conditional branches
+      // per pixel on RISC-V (no branch predictor). The mode is constant for the entire
+      // page rendering pass.
+      if (renderMode == GfxRenderer::BW) {
+        int pixelPosition = 0;
+        for (int glyphY = 0; glyphY < height; glyphY++) {
+          const int outerCoord = outerBase + glyphY;
+          for (int glyphX = 0; glyphX < width; glyphX++, pixelPosition++) {
+            int screenX, screenY;
+            if constexpr (rotation == TextRotation::Rotated90CW) {
+              screenX = outerCoord;
+              screenY = innerBase - glyphX;
+            } else {
+              screenX = innerBase + glyphX;
+              screenY = outerCoord;
+            }
+
+            const uint8_t byte = bitmap[pixelPosition >> 2];
+            const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
+            // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
+            const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
+
+            if (bmpVal < 3) {
+              // Black (also paints over the grays in BW mode)
+              renderer.drawPixel(screenX, screenY, pixelState);
+            }
           }
+        }
+      } else if (renderMode == GfxRenderer::GRAYSCALE_MSB) {
+        int pixelPosition = 0;
+        for (int glyphY = 0; glyphY < height; glyphY++) {
+          const int outerCoord = outerBase + glyphY;
+          for (int glyphX = 0; glyphX < width; glyphX++, pixelPosition++) {
+            int screenX, screenY;
+            if constexpr (rotation == TextRotation::Rotated90CW) {
+              screenX = outerCoord;
+              screenY = innerBase - glyphX;
+            } else {
+              screenX = innerBase + glyphX;
+              screenY = outerCoord;
+            }
 
-          const uint8_t byte = bitmap[pixelPosition >> 2];
-          const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
-          // the direct bit from the font is 0 -> white, 1 -> light gray, 2 -> dark gray, 3 -> black
-          // we swap this to better match the way images and screen think about colors:
-          // 0 -> black, 1 -> dark grey, 2 -> light grey, 3 -> white
-          const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
+            const uint8_t byte = bitmap[pixelPosition >> 2];
+            const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
+            const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
 
-          if (renderMode == GfxRenderer::BW && bmpVal < 3) {
-            // Black (also paints over the grays in BW mode)
-            renderer.drawPixel(screenX, screenY, pixelState);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && (bmpVal == 1 || bmpVal == 2)) {
-            // Light gray (also mark the MSB if it's going to be a dark gray too)
-            // We have to flag pixels in reverse for the gray buffers, as 0 leave alone, 1 update
-            renderer.drawPixel(screenX, screenY, false);
-          } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && bmpVal == 1) {
-            // Dark gray
-            renderer.drawPixel(screenX, screenY, false);
+            if (bmpVal == 1 || bmpVal == 2) {
+              // Light gray (mark MSB)
+              renderer.drawPixel(screenX, screenY, false);
+            }
+          }
+        }
+      } else if (renderMode == GfxRenderer::GRAYSCALE_LSB) {
+        int pixelPosition = 0;
+        for (int glyphY = 0; glyphY < height; glyphY++) {
+          const int outerCoord = outerBase + glyphY;
+          for (int glyphX = 0; glyphX < width; glyphX++, pixelPosition++) {
+            int screenX, screenY;
+            if constexpr (rotation == TextRotation::Rotated90CW) {
+              screenX = outerCoord;
+              screenY = innerBase - glyphX;
+            } else {
+              screenX = innerBase + glyphX;
+              screenY = outerCoord;
+            }
+
+            const uint8_t byte = bitmap[pixelPosition >> 2];
+            const uint8_t bit_index = (3 - (pixelPosition & 3)) * 2;
+            const uint8_t bmpVal = 3 - ((byte >> bit_index) & 0x3);
+
+            if (bmpVal == 1) {
+              // Dark gray
+              renderer.drawPixel(screenX, screenY, false);
+            }
           }
         }
       }
@@ -595,30 +652,47 @@ void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, con
 }
 
 void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
-  int rotatedX = 0;
-  int rotatedY = 0;
-  rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY);
-  // Rotate origin corner
+  int phyX = 0;
+  int phyY = 0;
+  rotateCoordinates(orientation, x, y, &phyX, &phyY);
+  // EInkDisplay copies bitmap rows as provided; it does not rotate bitmap bits.
+  // Only adjust the transformed origin corner here.
   switch (orientation) {
     case Portrait:
-      rotatedY = rotatedY - height;
+      phyY = phyY - height;
       break;
     case PortraitInverted:
-      rotatedX = rotatedX - width;
+      phyX = phyX - width;
       break;
     case LandscapeClockwise:
-      rotatedY = rotatedY - height;
-      rotatedX = rotatedX - width;
+      phyY = phyY - height;
+      phyX = phyX - width;
       break;
     case LandscapeCounterClockwise:
       break;
   }
-  // TODO: Rotate bits
-  display.drawImage(bitmap, rotatedX, rotatedY, width, height);
+  display.drawImage(bitmap, phyX, phyY, width, height);
 }
 
 void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
-  display.drawImageTransparent(bitmap, y, getScreenWidth() - width - x, height, width);
+  int phyX = 0;
+  int phyY = 0;
+  rotateCoordinates(orientation, x, y, &phyX, &phyY);
+  switch (orientation) {
+    case Portrait:
+      phyY = phyY - height;
+      break;
+    case PortraitInverted:
+      phyX = phyX - width;
+      break;
+    case LandscapeClockwise:
+      phyY = phyY - height;
+      phyX = phyX - width;
+      break;
+    case LandscapeCounterClockwise:
+      break;
+  }
+  display.drawImageTransparent(bitmap, phyX, phyY, width, height);
 }
 
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
@@ -971,8 +1045,8 @@ std::vector<std::string> GfxRenderer::wrappedText(const int fontId, const char* 
       // Last available line: keep input bounded so malformed or huge PDF text
       // runs cannot force a large allocation before truncation.
       if (currentLine.empty()) {
-        lines.push_back(truncatedText(fontId, boundedWord(cursor, boundedCStringLen(cursor, kWrappedTextSegmentLimit)).c_str(),
-                                      maxWidth, style));
+        lines.push_back(truncatedText(
+            fontId, boundedWord(cursor, boundedCStringLen(cursor, kWrappedTextSegmentLimit)).c_str(), maxWidth, style));
         return lines;
       }
       std::string lastContent = currentLine;
@@ -1218,9 +1292,6 @@ uint8_t* GfxRenderer::getFrameBuffer() const { return frameBuffer; }
 
 size_t GfxRenderer::getBufferSize() { return HalDisplay::BUFFER_SIZE; }
 
-// unused
-// void GfxRenderer::grayscaleRevert() const { display.grayscaleRevert(); }
-
 void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuffers(frameBuffer); }
 
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
@@ -1228,6 +1299,15 @@ void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuff
 void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFix); }
 
 void GfxRenderer::freeBwBufferChunks() {
+  if (bwBufferSingleAlloc) {
+    // Single allocation: only slot 0 is used
+    bwBufferSingleAlloc = false;
+    if (bwBufferChunks[0]) {
+      free(bwBufferChunks[0]);
+      bwBufferChunks[0] = nullptr;
+    }
+    return;
+  }
   for (auto& bwBufferChunk : bwBufferChunks) {
     if (bwBufferChunk) {
       free(bwBufferChunk);
@@ -1239,25 +1319,38 @@ void GfxRenderer::freeBwBufferChunks() {
 /**
  * This should be called before grayscale buffers are populated.
  * A `restoreBwBuffer` call should always follow the grayscale render if this method was called.
- * Uses chunked allocation to avoid needing 48KB of contiguous memory.
+ * Tries a single 48KB allocation first (lower fragmentation), falls back to 8KB chunks
+ * if heap cannot supply a single contiguous block.
  * Returns true if buffer was stored successfully, false if allocation failed.
  */
 bool GfxRenderer::storeBwBuffer() {
-  // Allocate and copy each chunk
-  for (size_t i = 0; i < BW_BUFFER_NUM_CHUNKS; i++) {
-    // Check if any chunks are already allocated
-    if (bwBufferChunks[i]) {
-      LOG_ERR("GFX", "!! BW buffer chunk %zu already stored - this is likely a bug, freeing chunk", i);
-      free(bwBufferChunks[i]);
-      bwBufferChunks[i] = nullptr;
+  // Sanity: no buffer should be stored when this is called
+  for (auto& chunk : bwBufferChunks) {
+    if (chunk) {
+      LOG_ERR("GFX", "!! BW buffer already stored - freeing stale data");
+      break;
     }
+  }
+  freeBwBufferChunks();
 
+  // Strategy 1: single large allocation (creates 1 heap region instead of 6)
+  uint8_t* buf = static_cast<uint8_t*>(malloc(HalDisplay::BUFFER_SIZE));
+  if (buf) {
+    memcpy(buf, frameBuffer, HalDisplay::BUFFER_SIZE);
+    bwBufferChunks[0] = buf;
+    bwBufferSingleAlloc = true;
+    LOG_DBG("GFX", "Stored BW buffer as single alloc (%zu bytes)", static_cast<size_t>(HalDisplay::BUFFER_SIZE));
+    return true;
+  }
+
+  // Strategy 2: chunked allocation (fallback when heap is fragmented)
+  bwBufferSingleAlloc = false;
+  for (size_t i = 0; i < BW_BUFFER_NUM_CHUNKS; i++) {
     const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
     bwBufferChunks[i] = static_cast<uint8_t*>(malloc(BW_BUFFER_CHUNK_SIZE));
 
     if (!bwBufferChunks[i]) {
       LOG_ERR("GFX", "!! Failed to allocate BW buffer chunk %zu (%zu bytes)", i, BW_BUFFER_CHUNK_SIZE);
-      // Free previously allocated chunks
       freeBwBufferChunks();
       return false;
     }
@@ -1265,39 +1358,45 @@ bool GfxRenderer::storeBwBuffer() {
     memcpy(bwBufferChunks[i], frameBuffer + offset, BW_BUFFER_CHUNK_SIZE);
   }
 
-  LOG_DBG("GFX", "Stored BW buffer in %zu chunks (%zu bytes each)", BW_BUFFER_NUM_CHUNKS, BW_BUFFER_CHUNK_SIZE);
+  LOG_DBG("GFX", "Stored BW buffer in %zu chunks (%zu bytes each) [single alloc failed]", BW_BUFFER_NUM_CHUNKS,
+          BW_BUFFER_CHUNK_SIZE);
   return true;
 }
 
 /**
  * This can only be called if `storeBwBuffer` was called prior to the grayscale render.
  * It should be called to restore the BW buffer state after grayscale rendering is complete.
- * Uses chunked restoration to match chunked storage.
+ * Supports both single-allocation and chunked storage modes.
  */
 void GfxRenderer::restoreBwBuffer() {
-  // Check if all chunks are allocated
-  bool missingChunks = false;
-  for (const auto& bwBufferChunk : bwBufferChunks) {
-    if (!bwBufferChunk) {
-      missingChunks = true;
-      break;
+  if (bwBufferSingleAlloc) {
+    // Single allocation: one big memcpy from slot 0
+    if (!bwBufferChunks[0]) {
+      LOG_ERR("GFX", "!! Single-alloc BW buffer: slot 0 is null");
+      bwBufferSingleAlloc = false;
+      return;
     }
-  }
+    memcpy(frameBuffer, bwBufferChunks[0], HalDisplay::BUFFER_SIZE);
+  } else {
+    // Chunked: verify all slots are present
+    for (const auto& chunk : bwBufferChunks) {
+      if (!chunk) {
+        LOG_ERR("GFX", "!! Chunked BW buffer: missing chunk, skipping restore");
+        freeBwBufferChunks();
+        return;
+      }
+    }
 
-  if (missingChunks) {
-    freeBwBufferChunks();
-    return;
-  }
-
-  for (size_t i = 0; i < BW_BUFFER_NUM_CHUNKS; i++) {
-    const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
-    memcpy(frameBuffer + offset, bwBufferChunks[i], BW_BUFFER_CHUNK_SIZE);
+    for (size_t i = 0; i < BW_BUFFER_NUM_CHUNKS; i++) {
+      const size_t offset = i * BW_BUFFER_CHUNK_SIZE;
+      memcpy(frameBuffer + offset, bwBufferChunks[i], BW_BUFFER_CHUNK_SIZE);
+    }
   }
 
   display.cleanupGrayscaleBuffers(frameBuffer);
 
   freeBwBufferChunks();
-  LOG_DBG("GFX", "Restored and freed BW buffer chunks");
+  LOG_DBG("GFX", "Restored and freed BW buffer");
 }
 
 /**
